@@ -271,15 +271,51 @@ MASALAH YANG DISELESAIKAN
     /backups   daftar backup di VPS
 
 ----------------------------------------------------------------
-9. YANG MASIH BELUM ADA
+9. FILTER PROMOSI, JUDI, DAN KONTAK
+----------------------------------------------------------------
+  Menegakkan janji di rules yang sebelumnya hanya tulisan.
+  Semua penolakan memakai bahasa pilihan user.
+
+  DITOLAK DI MANA PUN, termasuk di #share:
+    - link undangan grup/channel: t.me/+, t.me/joinchat,
+      chat.whatsapp.com, wa.me, line.me/ti
+      (dipakai untuk membajak anggota ke channel lain)
+    - nomor telepon Indonesia (+62 / 08xx, dengan atau tanpa spasi)
+      nomor sendiri = jualan, nomor orang lain = doxxing
+    - kata judi bersinyal kuat: maxwin, gacor, togel, scatter,
+      judol, parlay, sbobet, bocoran, anti rungkad, dsb
+    - pola promosi: "link di bio", "ready stock", "open jasa",
+      "dm untuk order", "jasa followers", dsb
+
+  LINK BIASA
+    boleh di #share dan #recs, dan boleh di KOMENTAR.
+    Ditolak di hashtag lain, supaya #vent dan #confess tidak jadi
+    tempat menitipkan promosi.
+
+    Komentar sengaja dibolehkan: menjawab pertanyaan orang dengan
+    tautan justru perilaku paling berguna di komunitas berbagi.
+
+  KATA AMBIGU TIDAK LANGSUNG DIBLOKIR
+    "slot", "rtp", "deposit", "situs", "wd", "jp" punya arti sah di
+    channel teknologi (slot waktu, RTP protokol jaringan, deposit
+    bank). Kata-kata itu baru dianggap judi kalau muncul minimal
+    DUA. Tanpa aturan ini, "#ask cara bikin slot waktu di kalender"
+    akan ikut terhapus.
+
+  Diuji 35 kasus: promosi/judi/kontak tertangkap, dan pemakaian
+  wajar serta link di #share/#recs/komentar tidak ikut kena.
+
+----------------------------------------------------------------
+10. YANG MASIH BELUM ADA
 ----------------------------------------------------------------
   - Belum ada mode approval (menfess masuk antrean sebelum tayang).
   - Belum ada role moderator; semua masih owner-only.
-  - Filter kata masih daftar statis; belum ada deteksi link,
-    nomor HP, atau normalisasi leetspeak. Padahal RULES_TEXT sudah
-    menyatakan jualan/promosi/judi/link afiliasi akan dihapus, jadi
-    untuk sekarang itu ditegakkan manual dari log channel dan
-    laporan member, bukan otomatis.
+  - Filter kata kasar masih daftar statis 25 kata dan belum ada
+    normalisasi leetspeak, jadi "k0nt0l" masih lolos. Filter
+    promosi/judi/kontak (bagian 9) sudah otomatis.
+  - Panel owner, log channel, dan bagian peringkat/profil/komunitas
+    masih Bahasa Indonesia saja. Alur member sudah dua bahasa,
+    lihat BAHASA.txt.
   - Belum ada statistik owner (DAU, user baru, jam ramai).
   - Belum ada broadcast ke semua user.
 ================================================================

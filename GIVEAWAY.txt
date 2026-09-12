@@ -153,7 +153,17 @@ BEDA DENGAN EVENT
   Dibuat otomatis oleh init_db(). Data lama tidak disentuh.
 
 ----------------------------------------------------------------
-8. CATATAN TEKNIS
+8. BAHASA
+----------------------------------------------------------------
+  Seluruh sisi peserta mengikuti bahasa pilihan masing-masing:
+  tombol, alasan tidak lolos syarat, DM pendaftaran, DM pemenang,
+  dan alur klaim. DM pemenang memakai bahasa PENERIMA, bukan bahasa
+  admin. Postingan giveaway di channel memakai satu bahasa
+  (DEFAULT_LANG) karena channel itu ruang bersama.
+  Lihat BAHASA.txt.
+
+----------------------------------------------------------------
+9. CATATAN TEKNIS
 ----------------------------------------------------------------
   - Jumlah peserta di postingan channel diperbarui oleh watcher
     setiap 30 detik, bukan setiap kali ada yang ikut. Mengedit

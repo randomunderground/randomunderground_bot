@@ -10,6 +10,7 @@ import time
 import logging
 import hashlib
 from functools import wraps
+from types import SimpleNamespace
 
 from telegram import (
     Update,
@@ -100,30 +101,65 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, "randomunderground.db")
 
 # Satu-satunya sumber daftar hashtag. Sebelumnya daftar ini ditulis ulang di
-# RULES_TEXT dan SEND_HELP_TEXT, jadi tiap perubahan harus disalin tiga kali
+# rules_text() dan send_help_text(), jadi tiap perubahan harus disalin tiga kali
 # dan pasti cepat melenceng. Sekarang kedua teks itu dibangun dari sini.
 VALID_HASHTAGS = {
-    "#drop": "tool, repo, file, atau link yang bisa langsung dipakai",
-    "#baca": "artikel, thread, atau video yang layak diluangkan waktu",
-    "#ask": "tanya langsung ke intinya, jangan cuma \"ada yang tau ga\"",
-    "#help": "butuh bantuan nyata, bukan cuma minta pendapat",
-    "#curhat": "cerita atau keluh kesah",
-    "#confess": "pengakuan yang nggak bisa kamu bilang pakai nama",
-    "#salty": "lagi kesal dan pengen ngeluarin",
-    "#gabut": "lagi bengong, cari bahan obrolan",
-    "#random": "bebas, apa aja",
+    "#share": {
+        "id": "bagi pengetahuan, tips, tool, atau pengalaman — baca peringatannya dulu",
+        "en": "share knowledge, tips, a tool, or experience — read the warning first",
+    },
+    "#recs": {
+        "id": "minta atau kasih rekomendasi (film, lagu, tempat)",
+        "en": "ask for or give recommendations (films, music, places)",
+    },
+    "#ask": {
+        "id": "tanya langsung ke intinya, jangan cuma \"ada yang tau ga\"",
+        "en": "ask the actual question, not just \"anyone know?\"",
+    },
+    "#help": {
+        "id": "butuh bantuan nyata, bukan cuma minta pendapat",
+        "en": "you need real help, not just opinions",
+    },
+    "#vent": {
+        "id": "cerita atau keluh kesah",
+        "en": "something you need to get off your chest",
+    },
+    "#confess": {
+        "id": "pengakuan yang nggak bisa kamu bilang pakai nama",
+        "en": "a confession you couldn't make under your own name",
+    },
+    "#salty": {
+        "id": "lagi kesal dan pengen ngeluarin",
+        "en": "you're annoyed and want to vent",
+    },
+    "#bored": {
+        "id": "lagi bengong, cari bahan obrolan",
+        "en": "bored, looking for something to talk about",
+    },
+    "#random": {
+        "id": "bebas, apa aja",
+        "en": "anything goes",
+    },
 }
 
+# Hashtag yang butuh konfirmasi sebelum tayang. Isi #share paling berisiko:
+# link bisa berisi malware atau phishing, dan tidak ada admin yang memverifikasi.
+# Pengirim harus membaca peringatan dulu, dan postingannya diberi catatan
+# supaya pembaca juga tidak menelan mentah-mentah.
+SHARE_HASHTAG = "#share"
 
-def hashtag_list(with_description=True, per_row=3):
-    """Daftar hashtag untuk ditampilkan ke user."""
+def hashtag_list(lang=None, with_description=True, per_row=3):
+    """Daftar hashtag untuk ditampilkan ke user, dalam bahasa pilihannya."""
+    lang = lang if lang in LANGUAGES else DEFAULT_LANG
     if with_description:
-        return "\n".join(f"{tag} — {desc}" for tag, desc in VALID_HASHTAGS.items())
+        return "\n".join(
+            f"{tag} — {desc.get(lang) or desc[DEFAULT_LANG]}"
+            for tag, desc in VALID_HASHTAGS.items()
+        )
     tags = list(VALID_HASHTAGS)
-    baris = [
+    return "\n".join(
         "  ".join(tags[i:i + per_row]) for i in range(0, len(tags), per_row)
-    ]
-    return "\n".join(baris)
+    )
 
 # Filter dasar. Ini sengaja tidak memblokir kata biasa yang bisa punya konteks
 # netral. Daftar ini bisa diperluas oleh owner.
@@ -559,6 +595,11 @@ def init_db():
             "INSERT OR REPLACE INTO leaderboard_meta(key,value) VALUES ('v16_legacy_event_score_synced','1')"
         )
 
+    # Bahasa pilihan user. Kosong berarti memakai DEFAULT_LANG.
+    user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "lang" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN lang TEXT NOT NULL DEFAULT ''")
+
     # Klaim hadiah custom: owner menentukan pertanyaannya, pemenang menjawab
     # lewat bot, jawabannya tersimpan. Ditambahkan setelah giveaway dirilis.
     gw_cols = {r["name"] for r in conn.execute("PRAGMA table_info(giveaways)").fetchall()}
@@ -573,6 +614,757 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+# ============================================================
+# MULTI-BAHASA
+# ============================================================
+# Bahasa dipilih per user dan disimpan di kolom users.lang, jadi pilihannya
+# bertahan lintas sesi dan restart.
+#
+# Yang diterjemahkan adalah SELURUH ALUR YANG DILEWATI MEMBER: welcome, menu,
+# rules, panduan kirim, semua penolakan, notifikasi, giveaway, dan laporan.
+# Panel owner, log channel, dan perintah moderasi tetap Bahasa Indonesia
+# karena hanya owner yang melihatnya.
+#
+# Menambah bahasa baru: tambahkan kodenya di LANGUAGES lalu isi kuncinya di
+# STRINGS. Kunci yang belum diterjemahkan otomatis jatuh ke DEFAULT_LANG,
+# jadi bahasa yang belum lengkap tidak pernah membuat bot error.
+
+DEFAULT_LANG = "id"
+LANGUAGES = {
+    "id": "🇮🇩 Bahasa Indonesia",
+    "en": "🇬🇧 English",
+}
+
+_lang_cache = {}
+
+STRINGS = {
+    # ---------- welcome & menu ----------
+    "welcome": {
+        "id": (
+            "RANDOM UNDERGROUND\n\n"
+            "Kirim apa pun tanpa nama kamu ikut terkirim.\n"
+            "Bagi tool dan bacaan, tanya yang spesifik, atau sekadar "
+            "keluarkan isi kepala.\n\n"
+            "Anonim ke pembaca, bukan ke admin. Baca RULES dulu."
+        ),
+        "en": (
+            "RANDOM UNDERGROUND\n\n"
+            "Post anything without your name going with it.\n"
+            "Share tools and reading, ask something specific, or just get it "
+            "off your chest.\n\n"
+            "Anonymous to readers, not to admins. Read the RULES first."
+        ),
+    },
+    "quota_left": {"id": "▪ Sisa kuota: {q}", "en": "▪ Quota left: {q}"},
+    "btn_profile": {"id": "◈ PROFIL", "en": "◈ PROFILE"},
+    "btn_post": {"id": "✦ KIRIM ANONIM", "en": "✦ ANONYMOUS POST"},
+    "btn_ranking": {"id": "◆ PERINGKAT", "en": "◆ RANKING"},
+    "btn_community": {"id": "◇ KOMUNITAS", "en": "◇ COMMUNITY"},
+    "btn_rules": {"id": "⚠ RULES", "en": "⚠ RULES"},
+    "btn_language": {"id": "🌐 BAHASA", "en": "🌐 LANGUAGE"},
+    "btn_owner": {"id": "⚙ OWNER CONTROL", "en": "⚙ OWNER CONTROL"},
+    "btn_back_menu": {"id": "← MENU", "en": "← MENU"},
+
+    # ---------- bahasa ----------
+    "lang_pick": {
+        "id": "🌐 BAHASA\n\nPilih bahasa yang kamu pakai di bot ini.",
+        "en": "🌐 LANGUAGE\n\nPick the language you want to use in this bot.",
+    },
+    "lang_set": {
+        "id": "✓ Bahasa diganti ke Bahasa Indonesia.",
+        "en": "✓ Language set to English.",
+    },
+    "lang_note": {
+        "id": (
+            "Catatan: peringkat, profil, dan komunitas masih Bahasa Indonesia."
+        ),
+        "en": (
+            "Note: ranking, profile, and community sections are still in "
+            "Indonesian."
+        ),
+    },
+
+    # ---------- rules ----------
+    "rules": {
+        "id": (
+            "RULES\n\n"
+            "Anonim ke pembaca, bukan ke admin.\n"
+            "Tiap kiriman tersimpan beserta pengirimnya. Yang hilang cuma "
+            "namamu di mata orang yang baca, bukan jejaknya.\n\n"
+            "KIRIMAN DIHAPUS KALAU\n"
+            "▪ Hashtagnya nggak ada, atau nggak nyambung sama isinya\n"
+            "▪ Jualan, promosi, judi, link afiliasi\n"
+            "▪ Ada data pribadi orang lain: nama, nomor, alamat, foto\n"
+            "▪ Nyerang fisik, ras, agama, atau orientasi orang\n\n"
+            "AKUN DIBATASI KALAU\n"
+            "▪ Ngirim hal yang sama berulang-ulang\n"
+            "▪ Kena hapus {warn} kali\n"
+            "▪ Bikin akun baru buat lolos dari batasan\n\n"
+            "Link cuma boleh di #share dan #recs. Nomor telepon dan link "
+            "undangan grup ditolak di mana pun.\n\n"
+            "#share BUKAN hasil verifikasi admin. Jangan share sembarangan, "
+            "dan jangan telan mentah-mentah yang di-share orang: periksa "
+            "sendiri sebelum dibuka, diunduh, atau dipakai.\n\n"
+            "Tiap kiriman ada tombol LAPOR. Laporan masuk ke admin lengkap "
+            "dengan identitas pengirimnya, jadi jangan coba-coba.\n\n"
+            "Kuota {max} kiriman per 24 jam.\n\n"
+            "HASHTAG\n{tags}"
+        ),
+        "en": (
+            "RULES\n\n"
+            "Anonymous to readers, not to admins.\n"
+            "Every post is stored along with who sent it. What disappears is "
+            "your name in the eyes of readers, not the trail.\n\n"
+            "YOUR POST GETS DELETED IF\n"
+            "▪ There's no hashtag, or it doesn't match the content\n"
+            "▪ It's selling, promotion, gambling, or affiliate links\n"
+            "▪ It contains someone else's personal data: name, number, "
+            "address, photo\n"
+            "▪ It attacks someone's body, race, religion, or orientation\n\n"
+            "YOUR ACCOUNT GETS RESTRICTED IF\n"
+            "▪ You post the same thing over and over\n"
+            "▪ You get deleted {warn} times\n"
+            "▪ You make a new account to get around a restriction\n\n"
+            "Links are only allowed in #share and #recs. Phone numbers and "
+            "group invite links are rejected everywhere.\n\n"
+            "#share is NOT verified by admins. Don't share carelessly, and "
+            "don't take what others share at face value: check it yourself "
+            "before opening, downloading, or using it.\n\n"
+            "Every post has a REPORT button. Reports reach the admin together "
+            "with the sender's identity, so don't try it.\n\n"
+            "Quota: {max} posts per 24 hours.\n\n"
+            "HASHTAGS\n{tags}"
+        ),
+    },
+
+    # ---------- panduan kirim ----------
+    "send_help": {
+        "id": (
+            "KIRIM ANONIM\n\n"
+            "Tulis pesanmu di sini. Teks, atau foto plus caption.\n"
+            "Wajib satu hashtag di paling depan.\n\n"
+            "{tags}\n\n"
+            "Contoh:\n"
+            "#share ada extension buat blokir tracker, ringan: ...\n"
+            "#ask cara mindahin domain tanpa downtime gimana?"
+        ),
+        "en": (
+            "ANONYMOUS POST\n\n"
+            "Write your message here. Text, or a photo with a caption.\n"
+            "Exactly one hashtag at the very start.\n\n"
+            "{tags}\n\n"
+            "Examples:\n"
+            "#share lightweight extension that blocks trackers: ...\n"
+            "#ask how do you move a domain with no downtime?"
+        ),
+    },
+
+    # ---------- gerbang akses ----------
+    "need_sub": {
+        "id": (
+            "✕ Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
+            "Subscribe dulu sebelum mengirim pesan."
+        ),
+        "en": (
+            "✕ You haven't subscribed to the RANDOM UNDERGROUND channel.\n\n"
+            "Subscribe first, then you can post."
+        ),
+    },
+    "sub_ok": {
+        "id": "Akses terverifikasi.",
+        "en": "Access verified.",
+    },
+    "sub_retry": {
+        "id": (
+            "✕ Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
+            "Subscribe dulu, lalu tekan CEK AKSES."
+        ),
+        "en": (
+            "✕ You haven't subscribed to the RANDOM UNDERGROUND channel.\n\n"
+            "Subscribe first, then press CHECK ACCESS."
+        ),
+    },
+    "btn_join_channel": {"id": "◆ JOIN CHANNEL", "en": "◆ JOIN CHANNEL"},
+    "btn_check_access": {"id": "✓ CEK AKSES", "en": "✓ CHECK ACCESS"},
+    "btn_join_discussion": {"id": "◆ JOIN GRUP DISKUSI", "en": "◆ JOIN DISCUSSION"},
+    "btn_check_again": {"id": "✓ CEK LAGI", "en": "✓ CHECK AGAIN"},
+    "discussion_ok": {
+        "id": (
+            "Kamu sudah join grup diskusi RANDOM UNDERGROUND.\n\n"
+            "Sekarang kamu sudah bisa ikut berkomentar."
+        ),
+        "en": (
+            "You've joined the RANDOM UNDERGROUND discussion group.\n\n"
+            "You can take part in the comments now."
+        ),
+    },
+    "discussion_retry": {
+        "id": (
+            "✕ Kamu belum join grup diskusi RANDOM UNDERGROUND.\n\n"
+            "Join dulu, lalu tekan CEK LAGI."
+        ),
+        "en": (
+            "✕ You haven't joined the RANDOM UNDERGROUND discussion group.\n\n"
+            "Join first, then press CHECK AGAIN."
+        ),
+    },
+
+    # ---------- kirim menfess ----------
+    "press_post_first": {
+        "id": "⟡ Tekan KIRIM ANONIM dulu.",
+        "en": "⟡ Press ANONYMOUS POST first.",
+    },
+    "quota_out": {
+        "id": (
+            "✕ Kuota pesan kamu sudah habis.\n\n"
+            "Maksimal {max} pesan dalam 24 jam."
+        ),
+        "en": (
+            "✕ You're out of posting quota.\n\n"
+            "Maximum {max} posts per 24 hours."
+        ),
+    },
+    "need_hashtag": {
+        "id": (
+            "✕ Pesan tidak dikirim.\n\n"
+            "Wajib memakai satu hashtag di awal pesan.\n"
+            "Contoh: #random hari ini bengong banget."
+        ),
+        "en": (
+            "✕ Post not sent.\n\n"
+            "You must start the message with exactly one hashtag.\n"
+            "Example: #random so bored today."
+        ),
+    },
+    "one_hashtag": {
+        "id": (
+            "✕ Pesan tidak dikirim.\n\n"
+            "Gunakan tepat satu hashtag yang sesuai dengan isi pesan."
+        ),
+        "en": (
+            "✕ Post not sent.\n\n"
+            "Use exactly one hashtag, and make it match the content."
+        ),
+    },
+    "bad_hashtag": {
+        "id": "✕ Hashtag tidak tersedia.\n\nPakai salah satu:\n\n{tags}",
+        "en": "✕ That hashtag doesn't exist.\n\nUse one of these:\n\n{tags}",
+    },
+    "bad_words": {
+        "id": (
+            "✕ Pesan belum dikirim.\n\n"
+            "Pesan mengandung kata yang tidak diperbolehkan. "
+            "Coba ubah kata-katanya lalu kirim lagi."
+        ),
+        "en": (
+            "✕ Post not sent.\n\n"
+            "It contains words that aren't allowed. Reword it and try again."
+        ),
+    },
+    "post_ok": {
+        "id": "✓ Pesan kamu terkirim!\n\nTekan tombol di bawah untuk melihatnya.",
+        "en": "✓ Your post is live!\n\nPress the button below to see it.",
+    },
+    # Dipakai untuk kiriman dari user shadowban. Harus terbaca sama suksesnya
+    # dengan post_ok, tapi tanpa menjanjikan tombol yang tidak ada.
+    "post_ok_pending": {
+        "id": "✓ Pesan kamu terkirim!\n\nPostingan akan tayang di channel sebentar lagi.",
+        "en": "✓ Your post is sent!\n\nIt will appear in the channel shortly.",
+    },
+    "post_failed": {
+        "id": (
+            "✕ Pesan belum berhasil dikirim.\n\n"
+            "Pastikan bot sudah menjadi admin di channel RANDOM UNDERGROUND."
+        ),
+        "en": (
+            "✕ Your post couldn't be sent.\n\n"
+            "Make sure the bot is still an admin in the RANDOM UNDERGROUND "
+            "channel."
+        ),
+    },
+    "text_or_photo": {
+        "id": "Boleh kirim teks atau foto + caption.",
+        "en": "You can send text, or a photo with a caption.",
+    },
+    "btn_view_post": {"id": "⟡ LIHAT POSTINGAN", "en": "⟡ VIEW POST"},
+
+    # ---------- peringatan #share ----------
+    "share_warn": {
+        "id": (
+            "⚠️ SEBELUM KAMU SHARE\n\n"
+            "Postingan #share tidak diverifikasi admin. Kamu yang bertanggung "
+            "jawab atas apa yang kamu bagikan.\n\n"
+            "Jangan share kalau:\n"
+            "▪ Kamu belum mencoba atau membaca sendiri isinya\n"
+            "▪ Sumbernya tidak jelas, atau file-nya dari tempat acak\n"
+            "▪ Isinya bajakan, crack, atau hasil bocoran data\n"
+            "▪ Ada data pribadi orang di dalamnya\n\n"
+            "Yang kamu share bisa dibuka ratusan orang. Kalau ternyata "
+            "berbahaya, jejak pengirimnya ada di admin.\n\n"
+            "Masih mau lanjut?"
+        ),
+        "en": (
+            "⚠️ BEFORE YOU SHARE\n\n"
+            "#share posts are not verified by admins. You are responsible for "
+            "what you share.\n\n"
+            "Don't share if:\n"
+            "▪ You haven't tried or read it yourself\n"
+            "▪ The source is unclear, or the file came from somewhere random\n"
+            "▪ It's pirated, cracked, or from a data leak\n"
+            "▪ It contains someone's personal data\n\n"
+            "Hundreds of people may open what you share. If it turns out to be "
+            "harmful, the admins have your trail.\n\n"
+            "Still want to continue?"
+        ),
+    },
+    "btn_share_go": {"id": "✓ LANJUT KIRIM", "en": "✓ POST IT"},
+    "btn_share_cancel": {"id": "✕ BATAL", "en": "✕ CANCEL"},
+    "share_cancelled": {
+        "id": "✕ Dibatalkan. Pesanmu tidak dikirim.",
+        "en": "✕ Cancelled. Your post was not sent.",
+    },
+    "share_expired": {
+        "id": "✕ Sudah kedaluwarsa. Kirim ulang pesannya ya.",
+        "en": "✕ That expired. Please send your message again.",
+    },
+    # Catatan yang ditempel di postingan #share di channel, supaya pembaca
+    # ikut diperingatkan, bukan cuma pengirimnya.
+    "share_footer": {
+        "id": "⚠ #share belum diverifikasi admin. Periksa sendiri sebelum dibuka atau dipakai.",
+        "en": "⚠ #share is not admin-verified. Check it yourself before opening or using it.",
+    },
+
+    # ---------- filter spam ----------
+    "spam_invite": {
+        "id": (
+            "Ada link undangan grup/channel atau nomor WhatsApp. "
+            "Link semacam itu tidak diperbolehkan di mana pun."
+        ),
+        "en": (
+            "That contains a group/channel invite link or a WhatsApp contact. "
+            "Those aren't allowed anywhere."
+        ),
+    },
+    "spam_phone": {
+        "id": (
+            "Ada nomor telepon di pesanmu. Nomor sendiri maupun nomor orang "
+            "lain tidak boleh dikirim ke channel."
+        ),
+        "en": (
+            "That contains a phone number. Neither your own nor someone "
+            "else's may be posted to the channel."
+        ),
+    },
+    "spam_gambling": {
+        "id": "Pesanmu terdeteksi sebagai promosi judi.",
+        "en": "That was flagged as gambling promotion.",
+    },
+    "spam_promo": {
+        "id": "Pesanmu terdeteksi sebagai jualan atau promosi.",
+        "en": "That was flagged as selling or promotion.",
+    },
+    "spam_link": {
+        "id": (
+            "Link cuma boleh di #share dan #recs.\n\n"
+            "Kalau memang mau membagi resource, ganti hashtagnya. "
+            "Kalau tidak, hapus linknya."
+        ),
+        "en": (
+            "Links are only allowed in #share and #recs.\n\n"
+            "If you're sharing a resource, switch the hashtag. "
+            "Otherwise remove the link."
+        ),
+    },
+    "post_rejected": {
+        "id": "✕ Pesan belum dikirim.\n\n{reason}",
+        "en": "✕ Post not sent.\n\n{reason}",
+    },
+
+    # ---------- komentar & balasan ----------
+    "reply_sent": {
+        "id": "Balasan kamu sudah dikirim secara anonim.",
+        "en": "Your reply was sent anonymously.",
+    },
+    "reply_failed": {
+        "id": (
+            "✕ Balasannya belum bisa dikirim.\n\n"
+            "Pastikan bot admin di channel dan grup komentar."
+        ),
+        "en": (
+            "✕ Your reply couldn't be sent.\n\n"
+            "Make sure the bot is an admin in the channel and the discussion "
+            "group."
+        ),
+    },
+    "reply_blocked_words": {
+        "id": "✕ Balasan tidak dikirim karena mengandung kata yang tidak diperbolehkan.",
+        "en": "✕ Reply not sent: it contains words that aren't allowed.",
+    },
+    "comment_gone": {
+        "id": "✕ Komentar sudah tidak ditemukan.",
+        "en": "✕ That comment no longer exists.",
+    },
+    "post_gone": {
+        "id": "✕ Postingan sudah tidak ditemukan.",
+        "en": "✕ That post no longer exists.",
+    },
+    "cannot_reply": {
+        "id": "✕ Kamu tidak bisa membalas komentar ini.",
+        "en": "✕ You can't reply to this comment.",
+    },
+    "new_reply": {
+        "id": "✓ Ada balasan baru!\n\n{preview}\n\nIdentitas pengirim tetap anonim.",
+        "en": "✓ New reply!\n\n{preview}\n\nThe sender stays anonymous.",
+    },
+    "btn_view_comment": {"id": "✦ LIHAT KOMENTAR", "en": "✦ VIEW COMMENT"},
+    "btn_reply": {"id": "✦ BALAS", "en": "✦ REPLY"},
+
+    # ---------- pembatasan akun ----------
+    "ban_perm": {
+        "id": "✕ Akun kamu dibatasi permanen ({mode}).",
+        "en": "✕ Your account is permanently restricted ({mode}).",
+    },
+    "ban_temp": {
+        "id": "✕ Akun kamu sedang dibatasi ({mode}).\n\nSisa waktu: {left}.",
+        "en": "✕ Your account is restricted ({mode}).\n\nTime left: {left}.",
+    },
+    "ban_reason": {"id": "Alasan: {reason}", "en": "Reason: {reason}"},
+    "ban_appeal": {
+        "id": "Kalau merasa ini keliru, hubungi admin RANDOM UNDERGROUND.",
+        "en": "If you think this is a mistake, contact a RANDOM UNDERGROUND admin.",
+    },
+    "unbanned": {
+        "id": (
+            "✓ Pembatasan akun kamu sudah dicabut.\n\n"
+            "Kamu bisa mengirim dan berkomentar lagi. Tolong ikuti rules "
+            "supaya tidak kena lagi."
+        ),
+        "en": (
+            "✓ The restriction on your account has been lifted.\n\n"
+            "You can post and comment again. Please follow the rules so it "
+            "doesn't happen again."
+        ),
+    },
+    "warned": {
+        "id": "⚠️ Kamu mendapat warning {n}/{max} dari admin.",
+        "en": "⚠️ You received warning {n}/{max} from an admin.",
+    },
+    "warn_read_rules": {
+        "id": "Tolong baca ulang rules RANDOM UNDERGROUND.",
+        "en": "Please read the RANDOM UNDERGROUND rules again.",
+    },
+
+    # ---------- laporan ----------
+    "report_ok": {
+        "id": (
+            "Laporan terkirim. Makasih sudah bantu jaga base.\n\n"
+            "Admin akan meninjau. Identitas kamu sebagai pelapor tidak "
+            "ditampilkan ke publik.\n\n"
+            "Cek DM bot kalau mau menambahkan alasannya."
+        ),
+        "en": (
+            "Report sent. Thanks for helping keep this place clean.\n\n"
+            "An admin will review it. You won't be shown publicly as the "
+            "reporter.\n\n"
+            "Check the bot DM if you want to add a reason."
+        ),
+    },
+    "report_dupe": {
+        "id": "Kamu sudah melaporkan postingan ini. Admin sedang meninjau.",
+        "en": "You already reported this post. An admin is reviewing it.",
+    },
+    "report_own": {
+        "id": "Ini postingan kamu sendiri.",
+        "en": "This is your own post.",
+    },
+    "report_gone": {
+        "id": "Postingan ini sudah tidak ada di database bot.",
+        "en": "This post is no longer in the bot's database.",
+    },
+    "report_why": {
+        "id": (
+            "⚠️ Laporan kamu sudah masuk.\n\n"
+            "Kalau mau, pilih alasannya supaya admin lebih cepat menilai. "
+            "Boleh juga diabaikan."
+        ),
+        "en": (
+            "⚠️ Your report is in.\n\n"
+            "If you want, pick a reason so the admin can judge faster. "
+            "Feel free to ignore this."
+        ),
+    },
+    "report_why_ok": {
+        "id": "Alasan dicatat: {reason}. Makasih!",
+        "en": "Reason recorded: {reason}. Thanks!",
+    },
+    "btn_report": {"id": "⚠️ LAPOR", "en": "⚠️ REPORT"},
+
+    # ---------- giveaway (sisi peserta) ----------
+    "gw_joined": {
+        "id": (
+            "Berhasil ikut giveaway!\n\n{name}\nPeserta: {n} orang{extra}\n\n"
+            "Kalau menang, nama kamu diumumkan di channel dan bot akan DM kamu."
+        ),
+        "en": (
+            "You're in!\n\n{name}\nEntries: {n}{extra}\n\n"
+            "If you win, your name is announced in the channel and the bot "
+            "will DM you."
+        ),
+    },
+    "gw_tickets": {
+        "id": (
+            "\n\nTiket kamu sekarang: {n}. Makin aktif kirim dan komentar, "
+            "makin banyak tiketmu."
+        ),
+        "en": (
+            "\n\nYour tickets: {n}. The more you post and comment, the more "
+            "tickets you get."
+        ),
+    },
+    "gw_already": {
+        "id": "Kamu sudah terdaftar.\n\nPeserta saat ini: {n} orang.",
+        "en": "You're already entered.\n\nCurrent entries: {n}.",
+    },
+    "gw_closed": {
+        "id": "Giveaway ini sudah ditutup.",
+        "en": "This giveaway is closed.",
+    },
+    "gw_expired": {
+        "id": "Waktu pendaftaran sudah habis.",
+        "en": "Entry time is over.",
+    },
+    "gw_not_eligible": {
+        "id": "Belum bisa ikut.\n\n{reason}",
+        "en": "You can't enter yet.\n\n{reason}",
+    },
+    "gw_gone": {
+        "id": "Giveaway ini sudah tidak ada.",
+        "en": "This giveaway no longer exists.",
+    },
+    "gw_entry_dm": {
+        "id": (
+            "🎁 Kamu terdaftar di giveaway:\n\n{name}\nHadiah: {prize}\n"
+            "Pengundian: {when}\n\n"
+            "Pemenang diumumkan di channel dan diberi tahu lewat DM ini."
+        ),
+        "en": (
+            "🎁 You're entered in a giveaway:\n\n{name}\nPrize: {prize}\n"
+            "Draw: {when}\n\n"
+            "Winners are announced in the channel and notified in this DM."
+        ),
+    },
+    "gw_win_dm": {
+        "id": (
+            "🎁 KAMU MENANG GIVEAWAY!\n\n{name}\nHadiah: {prize}\n"
+            "Peringkat: {rank}\n\n"
+            "Klaim dalam {hours} jam dengan tombol di bawah. Lewat dari itu, "
+            "hadiah diundi ulang ke peserta lain."
+        ),
+        "en": (
+            "🎁 YOU WON THE GIVEAWAY!\n\n{name}\nPrize: {prize}\n"
+            "Rank: {rank}\n\n"
+            "Claim within {hours} hours using the button below. After that, "
+            "the prize is redrawn to someone else."
+        ),
+    },
+    "gw_btn_join": {"id": "🎁 IKUT GIVEAWAY", "en": "🎁 ENTER GIVEAWAY"},
+    "gw_btn_req": {"id": "ℹ️ CEK SYARAT", "en": "ℹ️ REQUIREMENTS"},
+    "gw_btn_claim": {"id": "✓ KLAIM HADIAH", "en": "✓ CLAIM PRIZE"},
+    "gw_claim_open_dm": {
+        "id": "Buka DM bot untuk menyelesaikan klaim.",
+        "en": "Open the bot DM to finish your claim.",
+    },
+    "gw_claim_ask": {
+        "id": (
+            "🎁 KLAIM HADIAH — {name}\nHadiah: {prize}\n\n{prompt}\n\n"
+            "Balas pesan ini dengan jawabannya. Yang kamu kirim hanya dibaca "
+            "admin, tidak ditampilkan di channel."
+        ),
+        "en": (
+            "🎁 CLAIM YOUR PRIZE — {name}\nPrize: {prize}\n\n{prompt}\n\n"
+            "Reply to this message with your answer. Only the admin sees it; "
+            "it never appears in the channel."
+        ),
+    },
+    "gw_claim_no_dm": {
+        "id": "Bot tidak bisa DM kamu. Tekan START di bot ini dulu, lalu klaim lagi.",
+        "en": "The bot can't DM you. Press START here first, then claim again.",
+    },
+    "gw_claim_saved": {
+        "id": (
+            "✓ Klaim kamu sudah masuk!\n\nGiveaway: {name}\nHadiah: {prize}\n\n"
+            "Data yang kamu kirim sudah diteruskan ke admin. Kamu akan "
+            "dikabari lewat DM ini begitu hadiahnya dikirim."
+        ),
+        "en": (
+            "✓ Your claim is in!\n\nGiveaway: {name}\nPrize: {prize}\n\n"
+            "What you sent has been forwarded to the admin. You'll be "
+            "notified in this DM once the prize is sent."
+        ),
+    },
+    "gw_claim_ok": {
+        "id": "Klaim berhasil! Admin akan menghubungi kamu.",
+        "en": "Claim successful! An admin will contact you.",
+    },
+    "gw_claim_dupe": {
+        "id": "Hadiah ini sudah kamu klaim. Tunggu admin menghubungi kamu.",
+        "en": "You already claimed this prize. Wait for an admin to reach out.",
+    },
+    "gw_claim_late": {
+        "id": "Batas waktu klaim sudah lewat, hadiah sudah diundi ulang.",
+        "en": "The claim window closed; the prize has been redrawn.",
+    },
+    "gw_not_winner": {
+        "id": "Kamu bukan pemenang giveaway ini.",
+        "en": "You're not a winner of this giveaway.",
+    },
+    "gw_claim_text_only": {
+        "id": "✕ Kirim jawabannya dalam bentuk teks ya.\n\n{prompt}",
+        "en": "✕ Please send your answer as text.\n\n{prompt}",
+    },
+    "gw_claim_too_long": {
+        "id": "✕ Terlalu panjang. Maksimal 1000 karakter.",
+        "en": "✕ Too long. 1000 characters max.",
+    },
+    "gw_delivered": {
+        "id": (
+            "🎁 Hadiah giveaway \"{name}\" sudah dikirim admin.\n\n"
+            "Kalau belum kamu terima, balas pesan ini."
+        ),
+        "en": (
+            "🎁 Your prize for \"{name}\" has been sent by the admin.\n\n"
+            "If you haven't received it, reply to this message."
+        ),
+    },
+    "gw_none": {
+        "id": (
+            "Belum ada giveaway yang berjalan.\n\n"
+            "Pantau channel RANDOM UNDERGROUND untuk giveaway berikutnya."
+        ),
+        "en": (
+            "No giveaway is running right now.\n\n"
+            "Watch the RANDOM UNDERGROUND channel for the next one."
+        ),
+    },
+    "gw_you_joined": {"id": "✓ Kamu sudah terdaftar.", "en": "✓ You're entered."},
+    "gw_you_not_joined": {
+        "id": "Kamu belum terdaftar.",
+        "en": "You're not entered yet.",
+    },
+
+    # ---------- kelayakan giveaway ----------
+    "gwe_owner": {
+        "id": "Owner tidak ikut undian sendiri.",
+        "en": "Owners don't enter their own draw.",
+    },
+    "gwe_banned": {
+        "id": "Akun kamu sedang dibatasi, jadi belum bisa ikut giveaway.",
+        "en": "Your account is restricted, so you can't enter giveaways.",
+    },
+    "gwe_no_start": {
+        "id": "Chat bot ini dulu (tekan START), lalu coba ikut lagi.",
+        "en": "Start a chat with this bot (press START), then try again.",
+    },
+    "gwe_age": {
+        "id": (
+            "Akun kamu baru {days} hari terdaftar di bot. "
+            "Giveaway ini minimal {need} hari."
+        ),
+        "en": (
+            "Your account is only {days} days old here. "
+            "This giveaway needs at least {need} days."
+        ),
+    },
+    "gwe_sub": {
+        "id": "Kamu harus subscribe channel RANDOM UNDERGROUND dulu.",
+        "en": "You need to subscribe to the RANDOM UNDERGROUND channel first.",
+    },
+    "gwe_group": {
+        "id": "Kamu harus join grup diskusi RANDOM UNDERGROUND dulu.",
+        "en": "You need to join the RANDOM UNDERGROUND discussion group first.",
+    },
+    "gwe_menfess": {
+        "id": "Baru {n} kiriman. Giveaway ini minimal {need} kiriman.",
+        "en": "Only {n} posts so far. This giveaway needs at least {need}.",
+    },
+    "gwe_comment": {
+        "id": "Baru {n} komentar. Giveaway ini minimal {need} komentar.",
+        "en": "Only {n} comments so far. This giveaway needs at least {need}.",
+    },
+}
+
+
+def get_user_lang(user_id):
+    """Bahasa pilihan user. Di-cache karena dipanggil hampir di tiap pesan."""
+    if user_id is None:
+        return DEFAULT_LANG
+    user_id = int(user_id)
+    cached = _lang_cache.get(user_id)
+    if cached:
+        return cached
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT lang FROM users WHERE user_id=?", (user_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        conn.close()
+        return DEFAULT_LANG
+    conn.close()
+    lang = (row["lang"] if row and row["lang"] else DEFAULT_LANG)
+    if lang not in LANGUAGES:
+        lang = DEFAULT_LANG
+    _lang_cache[user_id] = lang
+    return lang
+
+
+def set_user_lang(user_id, lang):
+    if lang not in LANGUAGES:
+        return False
+    conn = db()
+    conn.execute(
+        "UPDATE users SET lang=? WHERE user_id=?", (lang, int(user_id))
+    )
+    conn.commit()
+    conn.close()
+    _lang_cache[int(user_id)] = lang
+    return True
+
+
+def t(key, lang=None, **fmt):
+    """Ambil string terjemahan.
+
+    Kunci yang belum diterjemahkan jatuh ke DEFAULT_LANG, dan kunci yang
+    tidak ada sama sekali mengembalikan namanya sendiri. Dengan begitu
+    bahasa yang belum lengkap tidak pernah membuat bot berhenti.
+    """
+    entry = STRINGS.get(key)
+    if entry is None:
+        logging.warning("Kunci terjemahan tidak ada: %s", key)
+        return key
+    lang = lang if lang in LANGUAGES else DEFAULT_LANG
+    teks = entry.get(lang) or entry.get(DEFAULT_LANG) or key
+    if fmt:
+        try:
+            return teks.format(**fmt)
+        except (KeyError, IndexError):
+            logging.warning("Format terjemahan gagal untuk kunci %s", key)
+    return teks
+
+
+def language_menu(current=None):
+    rows = []
+    for kode, nama in LANGUAGES.items():
+        tanda = "● " if kode == current else "○ "
+        rows.append([InlineKeyboardButton(
+            tanda + nama, callback_data=f"lang:set:{kode}"
+        )])
+    rows.append([InlineKeyboardButton(
+        t("btn_back_menu", current), callback_data="back_menu"
+    )])
+    return InlineKeyboardMarkup(rows)
 
 
 def save_user(user):
@@ -1435,6 +2227,124 @@ def contains_bad_word(text):
     return False
 
 
+# ------------------------------------------------------------
+# FILTER PROMOSI, JUDI, DAN KONTAK
+# ------------------------------------------------------------
+# rules_text() menjanjikan jualan/promosi/judi/link afiliasi akan dihapus,
+# tapi BAD_WORDS hanya berisi kata kasar. Bagian ini yang menegakkannya.
+#
+# Batasan penting: #share dan #recs ADA justru untuk membagi link. Filter link
+# yang berlaku menyeluruh akan mematikan dua hashtag itu. Karena itu link
+# biasa diizinkan hanya pada hashtag berbagi, sedangkan link rekrutmen
+# channel, nomor telepon, dan judi tetap diblokir di mana pun.
+
+# Hashtag yang memang dimaksudkan untuk membagi tautan.
+LINK_ALLOWED_HASHTAGS = {"#share", "#recs"}
+
+# Tautan undangan/rekrutmen: selalu ditolak, termasuk di #share. Ini dipakai
+# untuk membajak anggota ke channel lain, bukan membagi resource.
+INVITE_PATTERNS = (
+    re.compile(r"t\.me/\+", re.I),
+    re.compile(r"t\.me/joinchat", re.I),
+    re.compile(r"telegram\.me/\+", re.I),
+    re.compile(r"chat\.whatsapp\.com", re.I),
+    re.compile(r"\bwa\.me\b", re.I),
+    re.compile(r"\bapi\.whatsapp\.com\b", re.I),
+    re.compile(r"\bline\.me/ti\b", re.I),
+)
+
+# Tautan umum. Hanya diblokir di luar hashtag berbagi.
+URL_PATTERN = re.compile(
+    r"(?:https?://|www\.)\S+|\b[a-z0-9][a-z0-9-]{1,}\.(?:com|net|org|id|co|io|xyz|shop|site|link|me|gg|to|vip|club|online|store|info|biz)\b",
+    re.I,
+)
+
+# Nomor telepon / WhatsApp Indonesia. Ditolak di mana pun: membagi nomor
+# sendiri itu jualan, membagi nomor orang lain itu doxxing.
+# Pemisah opsional setelah kode negara supaya "+62 812 3456 7890" ikut
+# tertangkap, bukan hanya "+62812...".
+PHONE_PATTERN = re.compile(
+    r"(?<!\d)(?:\+?62|0)[\s.\-]?8[1-9][0-9][\s.\-]?[0-9]{3,4}[\s.\-]?[0-9]{3,5}(?!\d)"
+)
+
+# Kata judi yang praktis tidak punya arti lain. Satu kemunculan sudah cukup.
+GAMBLING_STRONG = {
+    "maxwin", "gacor", "togel", "toto", "slot88", "zeus88", "pragmatic",
+    "scatter", "olxtoto", "jackpot", "judol", "parlay", "mixparlay",
+    "sbobet", "bandar", "bocoran", "pola gacor", "situs slot", "slot gacor",
+    "depo pulsa", "link alternatif", "akun pro", "wd cepat", "anti rungkad",
+}
+
+# Kata yang punya arti sah di channel teknologi: "slot waktu", "RTP" sebagai
+# protokol jaringan, "deposit" perbankan. Baru dianggap judi kalau muncul
+# minimal dua, sehingga pemakaian wajar tidak ikut kena.
+GAMBLING_WEAK = {
+    "slot", "rtp", "deposit", "depo", "withdraw", "wd", "jp", "spin",
+    "situs", "gampang menang", "min depo", "kekalahan",
+}
+GAMBLING_WEAK_THRESHOLD = 2
+
+# Pola promosi / afiliasi.
+PROMO_PATTERNS = (
+    re.compile(r"\blink\s+(?:di|ada\s+di)\s+bio\b", re.I),
+    re.compile(r"\bcek\s+bio\b", re.I),
+    re.compile(r"\bdm\s+(?:untuk|buat)\s+(?:order|harga|info\s+harga)\b", re.I),
+    re.compile(r"\border\s+(?:via|lewat)\s+wa\b", re.I),
+    re.compile(r"\bready\s+stock\b", re.I),
+    re.compile(r"\bharga\s+(?:mulai|start)\s+dari\b", re.I),
+    re.compile(r"\bjasa\s+(?:followers|like|subscriber|view)\b", re.I),
+    re.compile(r"\b(?:jual|jasa)\s+(?:akun|apk|vcs|sewa)\b", re.I),
+    re.compile(r"\bopen\s+(?:jasa|order|po)\b", re.I),
+    re.compile(r"\bpromo\s+(?:hari\s+ini|terbatas)\b", re.I),
+)
+
+
+def _weak_gambling_hits(normalized):
+    return sum(1 for kata in GAMBLING_WEAK if f" {kata} " in normalized)
+
+
+def spam_reason(text, hashtag=None, allow_links=False):
+    """KUNCI terjemahan alasan penolakan, atau None kalau teks lolos.
+
+    Yang dikembalikan kunci, bukan teks jadi, supaya alasannya bisa
+    ditampilkan dalam bahasa pilihan user.
+
+    hashtag adalah hashtag pembuka kiriman (huruf kecil).
+    allow_links dipakai untuk KOMENTAR: menjawab pertanyaan orang dengan
+    tautan justru perilaku paling berguna di komunitas berbagi resource,
+    jadi tautan biasa tidak diblokir di kolom komentar. Link undangan,
+    nomor telepon, judi, dan promosi tetap ditolak di sana.
+    """
+    text = text or ""
+    normalized = normalize_for_filter(text)
+
+    for pola in INVITE_PATTERNS:
+        if pola.search(text):
+            return "spam_invite"
+
+    if PHONE_PATTERN.search(text):
+        return "spam_phone"
+
+    for kata in GAMBLING_STRONG:
+        if f" {kata} " in normalized:
+            return "spam_gambling"
+    if _weak_gambling_hits(normalized) >= GAMBLING_WEAK_THRESHOLD:
+        return "spam_gambling"
+
+    for pola in PROMO_PATTERNS:
+        if pola.search(text):
+            return "spam_promo"
+
+    # Tautan biasa: boleh di hashtag berbagi dan di komentar, ditolak di
+    # hashtag lain supaya #vent dan #confess tidak jadi tempat menitipkan
+    # promosi.
+    tautan_boleh = allow_links or (hashtag or "") in LINK_ALLOWED_HASHTAGS
+    if URL_PATTERN.search(text) and not tautan_boleh:
+        return "spam_link"
+
+    return None
+
+
 def get_warning_count(user_id):
     conn = db()
     row = conn.execute(
@@ -1503,19 +2413,31 @@ def fmt_ts(ts):
     return time.strftime("%d %b %Y %H:%M", time.localtime(int(ts)))
 
 
-def fmt_duration(seconds):
+# Satuan waktu per bahasa. Tanpa ini, pesan Inggris tetap menulis "2 jam".
+DURATION_UNITS = {
+    "id": {"minute": "menit", "hour": "jam", "day": "hari"},
+    "en": {"minute": "min", "hour": "h", "day": "d"},
+}
+
+
+def fmt_duration(seconds, lang=None):
     seconds = int(seconds)
+    unit = DURATION_UNITS.get(
+        lang if lang in DURATION_UNITS else DEFAULT_LANG, DURATION_UNITS["id"]
+    )
     if seconds <= 0:
-        return "0 menit"
+        return f"0 {unit['minute']}"
     if seconds < 3600:
-        return f"{max(1, seconds // 60)} menit"
+        return f"{max(1, seconds // 60)} {unit['minute']}"
     if seconds < 86400:
         hours, rest = divmod(seconds, 3600)
         minutes = rest // 60
-        return f"{hours} jam" + (f" {minutes} menit" if minutes else "")
+        out = f"{hours} {unit['hour']}"
+        return out + (f" {minutes} {unit['minute']}" if minutes else "")
     days, rest = divmod(seconds, 86400)
     hours = rest // 3600
-    return f"{days} hari" + (f" {hours} jam" if hours else "")
+    out = f"{days} {unit['day']}"
+    return out + (f" {hours} {unit['hour']}" if hours else "")
 
 
 # ------------------------------------------------------------
@@ -2013,16 +2935,16 @@ async def lift_group_restriction(bot, user_id):
         pass
 
 
-def ban_notice_text(ban):
+def ban_notice_text(ban, lang=None):
     label = BAN_MODE_LABEL.get(ban["mode"], "DIBATASI")
     if ban["banned_until"]:
-        sisa = fmt_duration(int(ban["banned_until"]) - int(time.time()))
-        head = f"✕ Akun kamu sedang dibatasi ({label}).\n\nSisa waktu: {sisa}."
+        sisa = fmt_duration(int(ban["banned_until"]) - int(time.time()), lang)
+        head = t("ban_temp", lang, mode=label, left=sisa)
     else:
-        head = f"✕ Akun kamu dibatasi permanen ({label})."
+        head = t("ban_perm", lang, mode=label)
     if ban["reason"]:
-        head += f"\nAlasan: {ban['reason']}"
-    return head + "\n\nKalau merasa ini keliru, hubungi admin RANDOM UNDERGROUND."
+        head += "\n" + t("ban_reason", lang, reason=ban["reason"])
+    return head + "\n\n" + t("ban_appeal", lang)
 
 
 async def block_if_banned(update, context, user):
@@ -2036,12 +2958,15 @@ async def block_if_banned(update, context, user):
     ban = get_ban(user.id)
     if not ban or ban["mode"] == "shadow":
         return False
+    lang = get_user_lang(user.id)
     message = update.message if update.message else None
     try:
         if message:
-            await message.reply_text(ban_notice_text(ban))
+            await message.reply_text(ban_notice_text(ban, lang))
         elif update.callback_query:
-            await update.callback_query.message.reply_text(ban_notice_text(ban))
+            await update.callback_query.message.reply_text(
+                ban_notice_text(ban, lang)
+            )
     except Exception:
         pass
     return True
@@ -2060,7 +2985,14 @@ async def moderate_message(message, context):
     if not text:
         return False
 
-    if not contains_bad_word(text):
+    alasan = None
+    if contains_bad_word(text):
+        alasan = "kata yang tidak diperbolehkan"
+    else:
+        spam = spam_reason(text, allow_links=True)
+        if spam:
+            alasan = spam
+    if alasan is None:
         return False
 
     warning_no = add_warning(message.from_user.id)
@@ -2076,7 +3008,7 @@ async def moderate_message(message, context):
         BOT_USER_ID or 0,
         message.from_user.id,
         "auto_delete",
-        f"filter kata terlarang (warning {warning_no})",
+        f"{alasan} (warning {warning_no})",
     )
     await log_comment(
         context.bot,
@@ -2084,20 +3016,19 @@ async def moderate_message(message, context):
         text,
         None,
         None,
-        note=f"DIHAPUS OTOMATIS · warning {warning_no}/{MAX_COMMENT_WARNINGS}",
+        note=f"DIHAPUS OTOMATIS · {alasan} · warning {warning_no}/{MAX_COMMENT_WARNINGS}",
     )
 
     if warning_no >= MAX_COMMENT_WARNINGS:
         warning_text = (
-            f"✕ Pesan kamu dihapus karena mengandung kata yang tidak diperbolehkan.\n\n"
-            f"⚠️ Warning {warning_no}/{MAX_COMMENT_WARNINGS}.\n"
-            f"Kalau terus diulang, akun bisa dibatasi dari komentar."
+            f"✕ Komentar dihapus: {alasan}\n\n"
+            f"⚠️ Warning {warning_no}/{MAX_COMMENT_WARNINGS}. "
+            f"Sekali lagi, akses komentarmu dibatasi."
         )
     else:
         warning_text = (
-            f"✕ Komentar kamu dihapus karena mengandung kata yang tidak diperbolehkan.\n\n"
-            f"⚠️ Warning {warning_no}/{MAX_COMMENT_WARNINGS}.\n"
-            f"Yuk jaga kolom komentar RANDOM UNDERGROUND tetap nyaman."
+            f"✕ Komentar dihapus: {alasan}\n\n"
+            f"⚠️ Warning {warning_no}/{MAX_COMMENT_WARNINGS}."
         )
 
     try:
@@ -2192,51 +3123,62 @@ async def is_discussion_member(user_id, context):
 # KEYBOARDS / TEXT
 # ============================================================
 
-def main_menu(user_id=None):
+def main_menu(user_id=None, lang=None):
+    lang = lang or get_user_lang(user_id)
     rows = [
-        [InlineKeyboardButton("◈ PROFILE", callback_data="profile:self")],
-        [InlineKeyboardButton("✦ ANONYMOUS POST", callback_data="send_menfess")],
-        [InlineKeyboardButton("◆ RANKING", callback_data="leaderboard")],
-        [InlineKeyboardButton("◇ COMMUNITY", callback_data="community")],
-        [InlineKeyboardButton("⚠ RULES", callback_data="rules")],
+        [InlineKeyboardButton(t("btn_profile", lang), callback_data="profile:self")],
+        [InlineKeyboardButton(t("btn_post", lang), callback_data="send_menfess")],
+        [InlineKeyboardButton(t("btn_ranking", lang), callback_data="leaderboard")],
+        [InlineKeyboardButton(t("btn_community", lang), callback_data="community")],
+        [InlineKeyboardButton(t("btn_rules", lang), callback_data="rules")],
+        [InlineKeyboardButton(t("btn_language", lang), callback_data="lang:menu")],
     ]
     if user_id is not None and is_owner(user_id):
-        rows.insert(0, [InlineKeyboardButton("⚙ OWNER CONTROL", callback_data="owner_panel")])
+        rows.insert(0, [InlineKeyboardButton(
+            t("btn_owner", lang), callback_data="owner_panel"
+        )])
     return InlineKeyboardMarkup(rows)
 
 
-def subscribe_menu():
+def subscribe_menu(lang=None):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
-            "◆ JOIN CHANNEL",
+            t("btn_join_channel", lang),
             url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}",
         )],
-        [InlineKeyboardButton("✓ CHECK ACCESS", callback_data="check_sub")],
+        [InlineKeyboardButton(t("btn_check_access", lang), callback_data="check_sub")],
     ])
 
 
-def discussion_join_menu():
+def discussion_join_menu(lang=None):
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
-                "◆ JOIN DISCUSSION",
+                t("btn_join_discussion", lang),
                 url=f"https://t.me/{DISCUSSION_GROUP_USERNAME.lstrip('@')}",
             ),
             InlineKeyboardButton(
-                "✓ CHECK AGAIN",
+                t("btn_check_again", lang),
                 callback_data="check_discussion_join",
             ),
         ]
     ])
 
 
-def rules_menu():
+def rules_menu(lang=None):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("← MENU", callback_data="back_menu")]
+        [InlineKeyboardButton(t("btn_back_menu", lang), callback_data="back_menu")]
     ])
 
 
-def view_menfess_button(menfess):
+def share_confirm_menu(lang=None):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_share_go", lang), callback_data="share:go")],
+        [InlineKeyboardButton(t("btn_share_cancel", lang), callback_data="share:no")],
+    ])
+
+
+def view_menfess_button(menfess, lang=None):
     url = (
         f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}/"
         f"{menfess['channel_message_id']}"
@@ -2247,44 +3189,21 @@ def view_menfess_button(menfess):
     ])
 
 
-WELCOME_TEXT = (
-    "RANDOM UNDERGROUND // ACCESS GRANTED\n\n"
-    "Anonymous social space for people who prefer\n"
-    "to speak without putting their identity forward.\n\n"
-    "POST. TALK. CONNECT. STAY ANONYMOUS.\n\n"
-    "Select a module below."
-)
+def welcome_text(lang=None):
+    return t("welcome", lang)
 
-RULES_TEXT = (
-    "RULES\n\n"
-    "Anonim ke pembaca, bukan ke admin.\n"
-    "Tiap kiriman tersimpan beserta pengirimnya. Yang hilang cuma "
-    "namamu di mata orang yang baca, bukan jejaknya.\n\n"
-    "KIRIMAN DIHAPUS KALAU\n"
-    "\u25aa Hashtagnya nggak ada, atau nggak nyambung sama isinya\n"
-    "\u25aa Jualan, promosi, judi, link afiliasi\n"
-    "\u25aa Ada data pribadi orang lain: nama, nomor, alamat, foto\n"
-    "\u25aa Nyerang fisik, ras, agama, atau orientasi orang\n\n"
-    "AKUN DIBATASI KALAU\n"
-    "\u25aa Ngirim hal yang sama berulang-ulang\n"
-    f"\u25aa Kena hapus {MAX_COMMENT_WARNINGS} kali\n"
-    "\u25aa Bikin akun baru buat lolos dari batasan\n\n"
-    "Tiap kiriman ada tombol LAPOR. Laporan masuk ke admin lengkap "
-    "dengan identitas pengirimnya, jadi jangan coba-coba.\n\n"
-    f"Kuota {MAX_SENDS} kiriman per 24 jam.\n\n"
-    "HASHTAG\n"
-    + hashtag_list()
-)
 
-SEND_HELP_TEXT = (
-    "KIRIM ANONIM\n\n"
-    "Tulis pesanmu di sini. Teks, atau foto plus caption.\n"
-    "Wajib satu hashtag di paling depan.\n\n"
-    + hashtag_list()
-    + "\n\nContoh:\n"
-    "#drop ada extension buat blokir tracker, ringan: ...\n"
-    "#ask cara mindahin domain tanpa downtime gimana?"
-)
+def rules_text(lang=None):
+    return t(
+        "rules", lang,
+        warn=MAX_COMMENT_WARNINGS,
+        max=MAX_SENDS,
+        tags=hashtag_list(lang),
+    )
+
+
+def send_help_text(lang=None):
+    return t("send_help", lang, tags=hashtag_list(lang))
 
 
 # ============================================================
@@ -2297,22 +3216,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     save_user(user)
+    lang = get_user_lang(user.id)
     context.user_data["waiting_message"] = False
     context.user_data["waiting_comment_reply"] = None
 
     if not await is_subscribed(user.id, context):
         await update.message.reply_text(
-            "⟡ RANDOM UNDERGROUND\n\n"
-            "Subscribe channel RANDOM UNDERGROUND dulu sebelum kirim pesan.\n\n"
-            "Kalau sudah subscribe, tekan CEK SUBSCRIBE.",
-            reply_markup=subscribe_menu(),
+            t("need_sub", lang), reply_markup=subscribe_menu(lang)
         )
         return
 
     await update.message.reply_text(
-        f"{WELCOME_TEXT}\n\n"
-        f"▪ Sisa kuota: {quota_text(user.id)}",
-        reply_markup=main_menu(user.id),
+        f"{welcome_text(lang)}\n\n"
+        + t("quota_left", lang, q=quota_text(user.id)),
+        reply_markup=main_menu(user.id, lang),
     )
 
 
@@ -2444,6 +3361,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     save_user(user)
     data = query.data or ""
+    lang = get_user_lang(user.id)
 
     # Tombol moderasi khusus owner; diproses sebelum pengecekan ban.
     if data.startswith("mod:"):
@@ -2466,38 +3384,87 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back_menu":
         await query.message.reply_text(
-            f"{WELCOME_TEXT}\n\n▪ Sisa kuota: {quota_text(user.id)}",
-            reply_markup=main_menu(user.id),
+            f"{welcome_text(lang)}\n\n"
+            + t("quota_left", lang, q=quota_text(user.id)),
+            reply_markup=main_menu(user.id, lang),
+        )
+        return
+
+    if data == "share:no":
+        context.user_data.pop("pending_share", None)
+        context.user_data.pop("share_confirmed", None)
+        await query.message.reply_text(
+            t("share_cancelled", lang), reply_markup=main_menu(user.id, lang)
+        )
+        return
+
+    if data == "share:go":
+        tertunda = context.user_data.pop("pending_share", None)
+        if not tertunda:
+            await query.message.reply_text(
+                t("share_expired", lang), reply_markup=main_menu(user.id, lang)
+            )
+            return
+        # Bangun ulang pesan aslinya, lalu lewati gerbang konfirmasi sekali.
+        context.user_data["share_confirmed"] = True
+        context.user_data["waiting_message"] = False
+        palsu = SimpleNamespace(
+            message_id=query.message.message_id,
+            from_user=user,
+            text=tertunda["text"],
+            entities=tertunda["entities"],
+            photo=(
+                [SimpleNamespace(file_id=tertunda["photo"])]
+                if tertunda["photo"] else None
+            ),
+            caption=tertunda["caption"],
+            caption_entities=tertunda["caption_entities"],
+            reply_text=query.message.reply_text,
+        )
+        await process_new_menfess(
+            SimpleNamespace(message=palsu, effective_user=user), context
+        )
+        context.user_data.pop("share_confirmed", None)
+        return
+
+    if data == "lang:menu":
+        await query.message.reply_text(
+            t("lang_pick", lang), reply_markup=language_menu(lang)
+        )
+        return
+
+    if data.startswith("lang:set:"):
+        pilihan = data.rsplit(":", 1)[1]
+        if not set_user_lang(user.id, pilihan):
+            return
+        await query.message.reply_text(
+            t("lang_set", pilihan) + "\n\n" + t("lang_note", pilihan),
+            reply_markup=main_menu(user.id, pilihan),
         )
         return
 
     if data == "check_sub":
         if await is_subscribed(user.id, context):
             await query.message.reply_text(
-                f"Akses terverifikasi.\n\n"
-                f"▪ Sisa kuota: {quota_text(user.id)}",
-                reply_markup=main_menu(user.id),
+                t("sub_ok", lang) + "\n\n"
+                + t("quota_left", lang, q=quota_text(user.id)),
+                reply_markup=main_menu(user.id, lang),
             )
         else:
             await query.message.reply_text(
-                "✕ Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
-                "Subscribe dulu, lalu tekan CEK SUBSCRIBE.",
-                reply_markup=subscribe_menu(),
+                t("sub_retry", lang), reply_markup=subscribe_menu(lang)
             )
         return
 
     if data == "check_discussion_join":
         if await is_discussion_member(user.id, context):
             await query.message.reply_text(
-                "Kamu sudah join grup diskusi RANDOM UNDERGROUND.\n\n"
-                "Sekarang kamu sudah bisa ikut berkomentar.",
-                reply_markup=main_menu(user.id),
+                t("discussion_ok", lang), reply_markup=main_menu(user.id, lang)
             )
         else:
             await query.message.reply_text(
-                "✕ Kamu belum join grup diskusi RANDOM UNDERGROUND.\n\n"
-                "Join dulu, lalu tekan CEK LAGI.",
-                reply_markup=discussion_join_menu(),
+                t("discussion_retry", lang),
+                reply_markup=discussion_join_menu(lang),
             )
         return
 
@@ -2947,7 +3914,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "rules":
-        await query.message.reply_text(RULES_TEXT, reply_markup=rules_menu())
+        await query.message.reply_text(
+            rules_text(lang), reply_markup=rules_menu(lang)
+        )
         return
 
     if data == "send_menfess":
@@ -2969,7 +3938,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["waiting_message"] = True
         context.user_data["waiting_comment_reply"] = None
 
-        await query.message.reply_text(SEND_HELP_TEXT)
+        await query.message.reply_text(send_help_text(lang))
         return
 
     if data.startswith("reply_comment:"):
@@ -3031,6 +4000,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     save_user(user)
+    lang = get_user_lang(user.id)
 
     # User yang di-ban/mute tidak bisa memakai bot sama sekali.
     if await block_if_banned(update, context, user):
@@ -3249,9 +4219,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["waiting_message"] = False
         context.user_data["waiting_comment_reply"] = None
         await update.message.reply_text(
-            "✕ Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
-            "Subscribe dulu sebelum mengirim pesan.",
-            reply_markup=subscribe_menu(),
+            t("need_sub", lang), reply_markup=subscribe_menu(lang)
         )
         return
 
@@ -3264,10 +4232,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("waiting_message", False):
         if not is_owner(user.id) and get_used_count(user.id) >= MAX_SENDS:
             context.user_data["waiting_message"] = False
-            await update.message.reply_text(
-                "✕ Kuota pesan kamu sudah habis.\n\n"
-                f"Maksimal {MAX_SENDS} pesan dalam 24 jam."
-            )
+            await update.message.reply_text(t("quota_out", lang, max=MAX_SENDS))
             return
 
         context.user_data["waiting_message"] = False
@@ -3275,67 +4240,61 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "⟡ Tekan KIRIM PESAN dulu.",
-        reply_markup=main_menu(user.id),
+        t("press_post_first", lang), reply_markup=main_menu(user.id, lang)
     )
 
 
 async def process_claim_answer(update, context, gid):
     """Terima data klaim dari pemenang, simpan, teruskan ke owner."""
     user = update.effective_user
+    lang = get_user_lang(user.id)
     gv = get_giveaway(gid)
     if not gv:
-        await update.message.reply_text("✕ Giveaway ini sudah tidak ada.")
+        await update.message.reply_text(t("gw_gone", lang))
         return
 
     row = get_winner_row(gid, user.id)
     if not row:
-        await update.message.reply_text("✕ Kamu bukan pemenang giveaway ini.")
+        await update.message.reply_text(t("gw_not_winner", lang))
         return
     if row["status"] != "pending":
-        await update.message.reply_text(
-            "Klaim kamu sudah tercatat sebelumnya. Tunggu admin mengirim hadiahnya."
-        )
+        await update.message.reply_text(t("gw_claim_dupe", lang))
         return
 
     jawaban = (update.message.text or update.message.caption or "").strip()
     if not jawaban:
         context.user_data["gw_claim_wait"] = gid
         await update.message.reply_text(
-            "✕ Kirim jawabannya dalam bentuk teks ya.\n\n"
-            f"{gv['claim_prompt']}"
+            t("gw_claim_text_only", lang, prompt=gv["claim_prompt"])
         )
         return
     if len(jawaban) > 1000:
         context.user_data["gw_claim_wait"] = gid
-        await update.message.reply_text("✕ Terlalu panjang. Maksimal 1000 karakter.")
+        await update.message.reply_text(t("gw_claim_too_long", lang))
         return
 
     if not claim_giveaway(gid, user.id, jawaban):
-        await update.message.reply_text("✕ Klaim gagal. Coba tekan tombol klaim lagi.")
+        await update.message.reply_text(t("gw_claim_dupe", lang))
         return
 
     await update.message.reply_text(
-        "✓ Klaim kamu sudah masuk!\n\n"
-        f"Giveaway: {gv['name']}\n"
-        f"Hadiah: {gv['prize']}\n\n"
-        "Data yang kamu kirim sudah diteruskan ke admin. Kamu akan dikabari "
-        "lewat DM ini begitu hadiahnya dikirim."
+        t("gw_claim_saved", lang, name=gv["name"], prize=gv["prize"])
     )
     await notify_claim(context.bot, gv, user.id, jawaban)
 
 
 async def process_private_comment_reply(update, context, db_id):
     user = update.effective_user
+    lang = get_user_lang(user.id)
     comment = get_discussion_message_by_db_id(db_id)
 
     if not comment:
-        await update.message.reply_text("✕ Komentar sudah tidak ditemukan.")
+        await update.message.reply_text(t("comment_gone", lang))
         return
 
     menfess = get_menfess(comment["menfess_id"])
     if not menfess:
-        await update.message.reply_text("✕ Postingan sudah tidak ditemukan.")
+        await update.message.reply_text(t("post_gone", lang))
         return
 
     allowed = (
@@ -3343,14 +4302,12 @@ async def process_private_comment_reply(update, context, db_id):
         or comment["author_user_id"] == user.id
     )
     if not allowed:
-        await update.message.reply_text("✕ Kamu tidak bisa membalas komentar ini.")
+        await update.message.reply_text(t("cannot_reply", lang))
         return
 
     text = update.message.text or update.message.caption or ""
     if contains_bad_word(text):
-        await update.message.reply_text(
-            "✕ Balasan tidak dikirim karena mengandung kata yang tidak diperbolehkan."
-        )
+        await update.message.reply_text(t("reply_blocked_words", lang))
         return
 
     if is_shadowbanned(user.id):
@@ -3359,9 +4316,7 @@ async def process_private_comment_reply(update, context, db_id):
             context.bot, user, text, menfess, db_id,
             note="BALASAN DITAHAN (SHADOWBAN)",
         )
-        await update.message.reply_text(
-            "Balasan kamu sudah dikirim secara anonim."
-        )
+        await update.message.reply_text(t("reply_sent", lang))
         return
 
     discussion_chat_id = comment["discussion_chat_id"]
@@ -3392,9 +4347,7 @@ async def process_private_comment_reply(update, context, db_id):
                 allow_sending_without_reply=False,
             )
         else:
-            await update.message.reply_text(
-                "Balasan untuk sekarang berupa teks atau foto + caption."
-            )
+            await update.message.reply_text(t("text_or_photo", lang))
             return
 
         create_discussion_message(
@@ -3409,15 +4362,10 @@ async def process_private_comment_reply(update, context, db_id):
         if event_activity_is_valid(update.message.text or update.message.caption or "", "comment"):
             add_event_points(user.id, comment=1, menfess_id=db_id)
 
-        await update.message.reply_text(
-            "Balasan kamu sudah dikirim secara anonim."
-        )
+        await update.message.reply_text(t("reply_sent", lang))
     except Exception:
         logging.exception("Gagal mengirim balasan anonim")
-        await update.message.reply_text(
-            "✕ Balasannya belum bisa dikirim.\n\n"
-            "Pastikan bot admin di channel dan grup komentar."
-        )
+        await update.message.reply_text(t("reply_failed", lang))
 
 
 # ============================================================
@@ -3427,39 +4375,58 @@ async def process_private_comment_reply(update, context, db_id):
 async def process_new_menfess(update, context):
     message = update.message
     user = message.from_user
+    lang = get_user_lang(user.id)
 
     content = message.text if message.text is not None else (message.caption or "")
 
     if contains_bad_word(content):
-        await message.reply_text(
-            "✕ Pesan belum dikirim.\n\n"
-            "Pesan mengandung kata yang tidak diperbolehkan. "
-            "Coba ubah kata-katanya lalu kirim lagi."
-        )
+        await message.reply_text(t("bad_words", lang))
         return
 
     match = re.match(r"^\s*(#[A-Za-z0-9_]+)(?:\s|$)", content)
     if not match:
-        await message.reply_text(
-            "✕ Pesan tidak dikirim.\n\n"
-            "Wajib memakai satu hashtag di awal pesan.\n"
-            "Contoh: #random hari ini gabut banget."
-        )
+        await message.reply_text(t("need_hashtag", lang))
         return
 
     hashtags = re.findall(r"(?<!\\w)#[A-Za-z0-9_]+", content)
     if len(hashtags) != 1:
-        await message.reply_text(
-            "✕ Pesan tidak dikirim.\n\n"
-            "Gunakan tepat satu hashtag yang sesuai dengan isi pesan."
-        )
+        await message.reply_text(t("one_hashtag", lang))
         return
 
     hashtag = match.group(1).lower()
     if hashtag not in VALID_HASHTAGS:
         await message.reply_text(
-            "✕ Hashtag tidak tersedia.\n\n"
-            "Pakai salah satu:\n\n" + hashtag_list()
+            t("bad_hashtag", lang, tags=hashtag_list(lang))
+        )
+        return
+
+    # Filter promosi/judi/kontak. Dijalankan setelah hashtag diketahui karena
+    # #share dan #recs memang boleh memuat tautan.
+    alasan_spam = spam_reason(content, hashtag)
+    if alasan_spam:
+        logging.info(
+            "MENFESS DITOLAK user=%s hashtag=%s alasan=%r",
+            user.id, hashtag, alasan_spam,
+        )
+        await message.reply_text(
+            t("post_rejected", lang, reason=t(alasan_spam, lang))
+        )
+        return
+
+    # #share paling berisiko: isinya bisa berupa link malware, phishing, atau
+    # bajakan, dan tidak ada admin yang memverifikasinya. Pengirim harus
+    # menyatakan sadar dulu sebelum kirimannya tayang.
+    if hashtag == SHARE_HASHTAG and not context.user_data.pop("share_confirmed", False):
+        context.user_data["pending_share"] = {
+            "text": message.text,
+            "entities": message.entities,
+            "photo": message.photo[-1].file_id if message.photo else None,
+            "caption": message.caption,
+            "caption_entities": message.caption_entities,
+            "content": content,
+        }
+        await message.reply_text(
+            t("share_warn", lang), reply_markup=share_confirm_menu(lang)
         )
         return
 
@@ -3471,32 +4438,37 @@ async def process_new_menfess(update, context):
         await log_menfess(
             context.bot, None, user, content, None, shadowed=True
         )
-        await message.reply_text(
-            "✓ Menfess kamu terkirim!\n\n"
-            "Postingan akan tayang di channel sebentar lagi."
-        )
+        await message.reply_text(t("post_ok_pending", lang))
         return
+
+    # Catatan untuk PEMBACA. Ditempel di akhir supaya offset entity yang
+    # sudah ada tidak bergeser, jadi format asli pengirim tetap utuh.
+    footer = ""
+    if hashtag == SHARE_HASHTAG:
+        footer = "\n\n" + t("share_footer", DEFAULT_LANG)
 
     try:
         if message.text:
             sent = await send_text_keep_format(
                 context.bot,
                 CHANNEL_USERNAME,
-                message.text,
+                message.text + footer,
                 entities=message.entities,
             )
         elif message.photo:
+            caption = message.caption or ""
+            # Caption foto dibatasi 1024 karakter oleh Telegram.
+            if footer and len(caption) + len(footer) > 1024:
+                footer = ""
             sent = await send_photo_keep_format(
                 context.bot,
                 CHANNEL_USERNAME,
                 message.photo[-1].file_id,
-                caption=message.caption or "",
+                caption=caption + footer,
                 caption_entities=message.caption_entities,
             )
         else:
-            await message.reply_text(
-                "Boleh kirim teks atau foto + caption."
-            )
+            await message.reply_text(t("text_or_photo", lang))
             return
 
         menfess_id = create_menfess(user.id, sent.message_id, content)
@@ -3523,9 +4495,8 @@ async def process_new_menfess(update, context):
         menfess = get_menfess(menfess_id)
 
         await message.reply_text(
-            "✓ Menfess kamu terkirim!\n\n"
-            "Kalau mau lihat postingannya, tekan tombol di bawah.",
-            reply_markup=view_menfess_button(menfess),
+            t("post_ok", lang),
+            reply_markup=view_menfess_button(menfess, lang),
         )
 
         logging.info(
@@ -3542,10 +4513,7 @@ async def process_new_menfess(update, context):
 
     except Exception:
         logging.exception("Gagal mengirim menfess")
-        await message.reply_text(
-            "✕ Pesan belum berhasil dikirim.\n\n"
-            "Pastikan bot sudah menjadi admin di channel RANDOM UNDERGROUND."
-        )
+        await message.reply_text(t("post_failed", lang))
 
 
 # ============================================================
@@ -3691,12 +4659,11 @@ async def discussion_comment_handler(update, context):
         if not comment_db:
             return
 
+        target_lang = get_user_lang(target_user_id)
         await context.bot.send_message(
             target_user_id,
-            f"✓ Ada balasan baru!\n\n"
-            f"{preview}\n\n"
-            "Identitas pengirim tetap anonim.",
-            reply_markup=reply_comment_button(comment_db["id"]),
+            t("new_reply", target_lang, preview=preview),
+            reply_markup=reply_comment_button(comment_db["id"], target_lang),
         )
     except Exception:
         logging.info(
@@ -3705,7 +4672,7 @@ async def discussion_comment_handler(update, context):
         )
 
 
-def reply_comment_button(comment_db_id):
+def reply_comment_button(comment_db_id, lang=None):
     comment = get_discussion_message_by_db_id(comment_db_id)
     if not comment:
         return InlineKeyboardMarkup([])
@@ -3722,13 +4689,13 @@ def reply_comment_button(comment_db_id):
 
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✦ LIHAT KOMENTAR", url=comment_url),
+            InlineKeyboardButton(t("btn_view_comment", lang), url=comment_url),
             InlineKeyboardButton(
-                "✦ BALAS",
+                t("btn_reply", lang),
                 callback_data=f"reply_comment:{comment_db_id}",
             ),
         ],
-        [InlineKeyboardButton("⟡ LIHAT POSTINGAN", url=post_url)],
+        [InlineKeyboardButton(t("btn_view_post", lang), url=post_url)],
     ])
 
 
@@ -3849,7 +4816,10 @@ def mark_reports_handled(target_type, target_id, actor_id):
 def report_menu(menfess_id):
     """Tombol yang menempel di setiap postingan menfess di channel."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚠️ LAPOR", callback_data=f"rep:lapor:{menfess_id}")]
+        [InlineKeyboardButton(
+            t("btn_report", DEFAULT_LANG),
+            callback_data=f"rep:lapor:{menfess_id}",
+        )]
     ])
 
 
@@ -3927,6 +4897,7 @@ async def handle_report_callback(update, context, data):
     channel, jadi semua umpan balik ke pelapor dikirim sebagai toast."""
     query = update.callback_query
     user = query.from_user
+    lang = get_user_lang(user.id)
     parts = data.split(":")
     action = parts[1] if len(parts) > 1 else ""
 
@@ -3943,24 +4914,19 @@ async def handle_report_callback(update, context, data):
             return
         menfess = get_menfess(menfess_id)
         if not menfess:
-            await toast("Postingan ini sudah tidak ada di database bot.")
+            await toast(t("report_gone", lang))
             return
         if int(menfess["sender_id"]) == user.id:
-            await toast("Ini postingan kamu sendiri.")
+            await toast(t("report_own", lang))
             return
 
         save_user(user)
         baru, total = add_report("menfess", menfess_id, user.id)
         if not baru:
-            await toast("Kamu sudah melaporkan postingan ini. Admin sedang meninjau.")
+            await toast(t("report_dupe", lang))
             return
 
-        await toast(
-            "Laporan terkirim. Makasih sudah bantu jaga base.\n\n"
-            "Admin akan meninjau. Identitas kamu sebagai pelapor tidak "
-            "ditampilkan ke publik.\n\n"
-            "Cek DM bot kalau mau menambahkan alasannya."
-        )
+        await toast(t("report_ok", lang))
         if total in REPORT_NOTIFY_AT:
             await log_report(context.bot, "menfess", menfess_id, user.id, total)
         else:
@@ -3974,9 +4940,7 @@ async def handle_report_callback(update, context, data):
         try:
             await context.bot.send_message(
                 user.id,
-                "⚠️ Laporan kamu sudah masuk.\n\n"
-                "Kalau mau, pilih alasannya supaya admin lebih cepat menilai. "
-                "Boleh juga diabaikan.",
+                t("report_why", lang),
                 reply_markup=report_reason_menu(menfess_id),
             )
         except Exception:
@@ -3992,9 +4956,9 @@ async def handle_report_callback(update, context, data):
         if reason not in REPORT_REASONS:
             return
         if not set_report_reason("menfess", menfess_id, user.id, reason):
-            await toast("Laporan kamu sudah tidak ada.")
+            await toast(t("report_gone", lang))
             return
-        await toast(f"Alasan dicatat: {REPORT_REASONS[reason]}. Makasih!")
+        await toast(t("report_why_ok", lang, reason=REPORT_REASONS[reason]))
         total, _ = report_summary("menfess", menfess_id)
         await log_report(context.bot, "menfess", menfess_id, user.id, total)
         return
@@ -4480,43 +5444,42 @@ def giveaway_tickets(user_id, gv):
     return max(1, min(GIVEAWAY_MAX_TICKETS, tickets))
 
 
-async def giveaway_eligibility(user_id, gv, context):
-    """(boleh_ikut, alasan). Alasan dipakai apa adanya untuk pesan ke user."""
+async def giveaway_eligibility(user_id, gv, context, lang=None):
+    """(boleh_ikut, alasan). Alasan sudah dalam bahasa pilihan user."""
+    lang = lang or get_user_lang(user_id)
+
     if is_owner(user_id):
-        return False, "Owner tidak ikut undian sendiri."
+        return False, t("gwe_owner", lang)
 
     if get_ban(user_id):
-        return False, "Akun kamu sedang dibatasi, jadi belum bisa ikut giveaway."
+        return False, t("gwe_banned", lang)
 
     row = get_user_row(user_id)
     if row is None:
-        return False, "Chat bot ini dulu (tekan START), lalu coba ikut lagi."
+        return False, t("gwe_no_start", lang)
 
     if gv["min_age_days"]:
         umur_hari = (int(time.time()) - int(row["created_at"])) // 86400
         if umur_hari < gv["min_age_days"]:
-            return False, (
-                f"Akun kamu baru {umur_hari} hari terdaftar di bot. "
-                f"Giveaway ini minimal {gv['min_age_days']} hari."
+            return False, t(
+                "gwe_age", lang, days=umur_hari, need=gv["min_age_days"]
             )
 
     if gv["require_channel"] and not await is_subscribed(user_id, context):
-        return False, "Kamu harus subscribe channel RANDOM UNDERGROUND dulu."
+        return False, t("gwe_sub", lang)
 
     if gv["require_discussion"] and not await is_discussion_member(user_id, context):
-        return False, "Kamu harus join grup diskusi RANDOM UNDERGROUND dulu."
+        return False, t("gwe_group", lang)
 
     if gv["min_menfess"] or gv["min_comment"]:
         menfess, comment = giveaway_activity(user_id)
         if menfess < gv["min_menfess"]:
-            return False, (
-                f"Baru {menfess} menfess. Giveaway ini minimal "
-                f"{gv['min_menfess']} menfess."
+            return False, t(
+                "gwe_menfess", lang, n=menfess, need=gv["min_menfess"]
             )
         if comment < gv["min_comment"]:
-            return False, (
-                f"Baru {comment} komentar. Giveaway ini minimal "
-                f"{gv['min_comment']} komentar."
+            return False, t(
+                "gwe_comment", lang, n=comment, need=gv["min_comment"]
             )
 
     return True, "ok"
@@ -4743,8 +5706,12 @@ def giveaway_post_text(gv, entry_count=None):
 
 def giveaway_join_menu(gv):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎁 IKUT GIVEAWAY", callback_data=f"gw:join:{gv['id']}")],
-        [InlineKeyboardButton("ℹ️ CEK SYARAT", callback_data=f"gw:info:{gv['id']}")],
+        [InlineKeyboardButton(
+            t("gw_btn_join", DEFAULT_LANG), callback_data=f"gw:join:{gv['id']}"
+        )],
+        [InlineKeyboardButton(
+            t("gw_btn_req", DEFAULT_LANG), callback_data=f"gw:info:{gv['id']}"
+        )],
     ])
 
 
@@ -4894,7 +5861,9 @@ async def notify_claim(bot, gv, user_id, claim_data):
 
 def giveaway_claim_menu(gid):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✓ KLAIM HADIAH", callback_data=f"gw:claim:{gid}")]
+        [InlineKeyboardButton(
+            t("gw_btn_claim", DEFAULT_LANG), callback_data=f"gw:claim:{gid}"
+        )]
     ])
 
 
@@ -4913,12 +5882,9 @@ async def announce_giveaway_result(bot, gid):
         try:
             await bot.send_message(
                 int(row["user_id"]),
-                f"🎁 KAMU MENANG GIVEAWAY!\n\n"
-                f"{gv['name']}\n"
-                f"Hadiah: {gv['prize']}\n"
-                f"Peringkat: {row['rank']}\n\n"
-                f"Klaim dalam {gv['claim_hours']} jam dengan tombol di bawah. "
-                "Lewat dari itu, hadiah diundi ulang ke peserta lain.",
+                t("gw_win_dm", get_user_lang(row["user_id"]),
+                  name=gv["name"], prize=gv["prize"], rank=row["rank"],
+                  hours=gv["claim_hours"]),
                 reply_markup=giveaway_claim_menu(gid),
             )
         except Exception:
@@ -5203,7 +6169,9 @@ async def apply_ban(context, actor_id, target_id, mode, duration_seconds, reason
         ban = get_ban(target_id)
         if ban:
             try:
-                await context.bot.send_message(target_id, ban_notice_text(ban))
+                await context.bot.send_message(
+                    target_id, ban_notice_text(ban, get_user_lang(target_id))
+                )
             except Exception:
                 logging.info("Tidak bisa memberi tahu user %s soal ban", target_id)
 
@@ -5232,10 +6200,7 @@ async def apply_unban(context, actor_id, target_id):
     if removed:
         try:
             await context.bot.send_message(
-                target_id,
-                "✓ Pembatasan akun kamu sudah dicabut.\n\n"
-                "Kamu bisa mengirim menfess dan berkomentar lagi. "
-                "Tolong ikuti rules supaya tidak kena lagi.",
+                target_id, t("unbanned", get_user_lang(target_id))
             )
         except Exception:
             pass
@@ -5343,11 +6308,12 @@ async def warn_command(update, context):
     count = add_warning(target)
     log_mod_action(update.effective_user.id, target, "warn", reason)
     try:
+        wl = get_user_lang(target)
         await context.bot.send_message(
             target,
-            f"⚠️ Kamu mendapat warning {count}/{MAX_COMMENT_WARNINGS} dari admin."
-            + (f"\nAlasan: {reason}" if reason else "")
-            + "\n\nTolong baca ulang rules RANDOM UNDERGROUND.",
+            t("warned", wl, n=count, max=MAX_COMMENT_WARNINGS)
+            + (("\n" + t("ban_reason", wl, reason=reason)) if reason else "")
+            + "\n\n" + t("warn_read_rules", wl),
         )
     except Exception:
         pass
@@ -5688,10 +6654,11 @@ async def handle_mod_callback(update, context, data):
         count = add_warning(arg)
         log_mod_action(actor.id, arg, "warn", "via tombol log channel")
         try:
+            wl = get_user_lang(arg)
             await context.bot.send_message(
                 arg,
-                f"⚠️ Kamu mendapat warning {count}/{MAX_COMMENT_WARNINGS} dari admin.\n\n"
-                "Tolong baca ulang rules RANDOM UNDERGROUND.",
+                t("warned", wl, n=count, max=MAX_COMMENT_WARNINGS)
+                + "\n\n" + t("warn_read_rules", wl),
             )
         except Exception:
             pass
@@ -5759,6 +6726,7 @@ async def handle_giveaway_callback(update, context, data):
     akan bocor ke publik, jadi semua umpan balik dikirim sebagai toast."""
     query = update.callback_query
     user = query.from_user
+    lang = get_user_lang(user.id)
     parts = data.split(":")
     action = parts[1] if len(parts) > 1 else ""
     try:
@@ -5774,7 +6742,7 @@ async def handle_giveaway_callback(update, context, data):
 
     gv = get_giveaway(gid)
     if not gv:
-        await toast("Giveaway ini sudah tidak ada.")
+        await toast(t("gw_gone", lang))
         return
 
     if action == "info":
@@ -5788,47 +6756,37 @@ async def handle_giveaway_callback(update, context, data):
 
     if action == "join":
         if gv["status"] != "open":
-            await toast("Giveaway ini sudah ditutup.")
+            await toast(t("gw_closed", lang))
             return
         if int(time.time()) >= int(gv["ends_at"]):
-            await toast("Waktu pendaftaran sudah habis.")
+            await toast(t("gw_expired", lang))
             return
         if has_joined_giveaway(gid, user.id):
-            await toast(
-                f"Kamu sudah terdaftar.\n\nPeserta saat ini: "
-                f"{giveaway_entry_count(gid)} orang."
-            )
+            await toast(t("gw_already", lang, n=giveaway_entry_count(gid)))
             return
 
-        boleh, alasan = await giveaway_eligibility(user.id, gv, context)
+        boleh, alasan = await giveaway_eligibility(user.id, gv, context, lang)
         if not boleh:
-            await toast(f"Belum bisa ikut.\n\n{alasan}")
+            await toast(t("gw_not_eligible", lang, reason=alasan))
             return
 
         save_user(user)
         if not add_giveaway_entry(gid, user.id):
-            await toast("Kamu sudah terdaftar.")
+            await toast(t("gw_already", lang, n=giveaway_entry_count(gid)))
             return
 
         total = giveaway_entry_count(gid)
         extra = ""
         if gv["mode"] == "ticket":
-            extra = (
-                f"\n\nTiket kamu sekarang: {giveaway_tickets(user.id, gv)}. "
-                "Makin aktif kirim menfess dan komentar, makin banyak tiketmu."
-            )
+            extra = t("gw_tickets", lang, n=giveaway_tickets(user.id, gv))
         await toast(
-            f"Berhasil ikut giveaway!\n\n{gv['name']}\n"
-            f"Peserta: {total} orang{extra}\n\n"
-            "Kalau menang, nama kamu diumumkan di channel dan bot akan DM kamu."
+            t("gw_joined", lang, name=gv["name"], n=total, extra=extra)
         )
         try:
             await context.bot.send_message(
                 user.id,
-                f"🎁 Kamu terdaftar di giveaway:\n\n{gv['name']}\n"
-                f"Hadiah: {gv['prize']}\n"
-                f"Pengundian: {fmt_ts(gv['ends_at'])}\n\n"
-                "Pemenang diumumkan di channel dan diberi tahu lewat DM ini.",
+                t("gw_entry_dm", lang, name=gv["name"], prize=gv["prize"],
+                  when=fmt_ts(gv["ends_at"])),
             )
         except Exception:
             pass
@@ -5847,8 +6805,7 @@ async def handle_giveaway_callback(update, context, data):
             try:
                 await context.bot.send_message(
                     target,
-                    f"🎁 Hadiah giveaway \"{gv['name']}\" sudah dikirim admin.\n\n"
-                    "Kalau belum kamu terima, balas pesan ini.",
+                    t("gw_delivered", get_user_lang(target), name=gv["name"]),
                 )
             except Exception:
                 pass
@@ -5860,16 +6817,14 @@ async def handle_giveaway_callback(update, context, data):
     if action == "claim":
         rows = [w for w in giveaway_winners(gid) if int(w["user_id"]) == user.id]
         if not rows:
-            await toast("Kamu bukan pemenang giveaway ini.")
+            await toast(t("gw_not_winner", lang))
             return
         row = rows[0]
-        if row["status"] == "claimed":
-            await toast("Hadiah ini sudah kamu klaim. Tunggu admin menghubungi kamu.")
+        if row["status"] in ("claimed", "fulfilled"):
+            await toast(t("gw_claim_dupe", lang))
             return
         if row["status"] == "expired":
-            await toast(
-                "Batas waktu klaim sudah lewat, hadiah sudah diundi ulang."
-            )
+            await toast(t("gw_claim_late", lang))
             return
         prompt = (gv["claim_prompt"] or "").strip()
 
@@ -5878,36 +6833,22 @@ async def handle_giveaway_callback(update, context, data):
         # dan bot yang mengumpulkan jawabannya di sini.
         if prompt:
             context.user_data["gw_claim_wait"] = gid
-            await toast("Buka DM bot untuk menyelesaikan klaim.")
+            await toast(t("gw_claim_open_dm", lang))
             try:
                 await context.bot.send_message(
                     user.id,
-                    f"🎁 KLAIM HADIAH — {gv['name']}\n"
-                    f"Hadiah: {gv['prize']}\n\n"
-                    f"{prompt}\n\n"
-                    "Balas pesan ini dengan jawabannya. Yang kamu kirim hanya "
-                    "dibaca admin, tidak ditampilkan di channel."
+                    t("gw_claim_ask", lang, name=gv["name"],
+                      prize=gv["prize"], prompt=prompt),
                 )
             except Exception:
                 context.user_data.pop("gw_claim_wait", None)
-                await toast(
-                    "Bot tidak bisa DM kamu. Tekan START di bot ini dulu, "
-                    "lalu klaim lagi."
-                )
+                await toast(t("gw_claim_no_dm", lang))
             return
 
         if not claim_giveaway(gid, user.id):
-            await toast("Klaim gagal. Coba lagi sebentar.")
+            await toast(t("gw_claim_dupe", lang))
             return
-        await toast("Klaim berhasil! Admin akan menghubungi kamu.")
-        try:
-            await query.message.reply_text(
-                "✓ Hadiah sudah kamu klaim.\n\n"
-                "Admin RANDOM UNDERGROUND akan menghubungi kamu lewat DM ini "
-                "untuk pengiriman hadiah."
-            )
-        except Exception:
-            pass
+        await toast(t("gw_claim_ok", lang))
         await notify_claim(context.bot, gv, user.id, "")
         return
 
@@ -6125,14 +7066,12 @@ async def giveaway_public_command(update, context):
     """/giveaway untuk peserta: lihat giveaway aktif dan ikut dari DM."""
     gv = get_open_giveaway()
     message = update.effective_message
+    lang = get_user_lang(update.effective_user.id)
     if not gv:
-        await message.reply_text(
-            "Belum ada giveaway yang berjalan.\n\n"
-            "Pantau channel RANDOM UNDERGROUND untuk giveaway berikutnya."
-        )
+        await message.reply_text(t("gw_none", lang))
         return
     sudah = has_joined_giveaway(gv["id"], update.effective_user.id)
-    status = "✓ Kamu sudah terdaftar." if sudah else "Kamu belum terdaftar."
+    status = t("gw_you_joined", lang) if sudah else t("gw_you_not_joined", lang)
     await message.reply_text(
         giveaway_post_text(gv) + f"\n\n{status}",
         reply_markup=giveaway_join_menu(gv),

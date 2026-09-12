@@ -1,0 +1,68 @@
+================================================================
+RANDOM UNDERGROUND BOT - MULTI-BAHASA
+================================================================
+
+Bahasa dipilih per user dan disimpan di kolom users.lang, jadi
+pilihannya bertahan lintas sesi maupun restart container.
+
+  Tersedia : Bahasa Indonesia (default), English
+  Ganti    : tombol 🌐 BAHASA di menu utama
+  Default  : user baru dan user lama otomatis Bahasa Indonesia
+
+----------------------------------------------------------------
+1. YANG SUDAH DUA BAHASA
+----------------------------------------------------------------
+  Seluruh alur yang dilewati member:
+    - welcome dan tombol menu utama
+    - rules, termasuk deskripsi setiap hashtag
+    - panduan kirim anonim
+    - gerbang subscribe dan join grup diskusi
+    - semua penolakan kiriman: hashtag salah, kata terlarang,
+      promosi, judi, nomor telepon, link di hashtag yang salah
+    - konfirmasi kiriman terkirim dan kuota habis
+    - balasan anonim dan notifikasi balasan baru
+    - peringatan, notifikasi ban/mute/unban, termasuk satuan waktu
+    - peringatan #share dan tombolnya
+    - giveaway sisi peserta: tombol, alasan tidak lolos syarat,
+      DM peserta, DM pemenang, seluruh alur klaim
+    - laporan member: semua popup dan pilihan alasan
+
+----------------------------------------------------------------
+2. YANG MASIH BAHASA INDONESIA SAJA
+----------------------------------------------------------------
+  - Panel owner dan semua perintah moderasi. Hanya owner yang
+    melihatnya, jadi tidak perlu diterjemahkan.
+  - Log channel.
+  - Bagian PERINGKAT, PROFIL, dan KOMUNITAS. Ini bukan soal label
+    tombol saja: isinya konten Indonesia (pertanyaan QOTD, nama
+    misi, nama badge, gelar), jadi menerjemahkannya berarti
+    menulis ulang kontennya, bukan sekadar menambah kunci.
+  - Postingan di channel. Channel itu satu ruang bersama, jadi
+    isinya memakai satu bahasa. Catatan peringatan #share yang
+    ditempel di postingan memakai DEFAULT_LANG.
+
+----------------------------------------------------------------
+3. MENAMBAH BAHASA BARU
+----------------------------------------------------------------
+  1. Tambahkan kodenya di LANGUAGES, misal "ms": "🇲🇾 Bahasa Melayu"
+  2. Isi kuncinya di STRINGS untuk kode itu
+  3. Tambahkan satuan waktunya di DURATION_UNITS
+  4. Tambahkan deskripsi hashtag di VALID_HASHTAGS
+
+  Kunci yang belum diterjemahkan otomatis jatuh ke DEFAULT_LANG dan
+  dicatat di log sebagai warning, jadi bahasa yang belum lengkap
+  TIDAK pernah membuat bot error atau menampilkan teks kosong.
+
+----------------------------------------------------------------
+4. CATATAN TEKNIS
+----------------------------------------------------------------
+  - get_user_lang() memakai cache di memori karena dipanggil
+    hampir di setiap pesan. Cache diperbarui saat bahasa diganti.
+  - save_user() tidak menimpa kolom lang, jadi pilihan bahasa tidak
+    hilang setiap user mengirim pesan.
+  - Notifikasi yang dikirim KE ORANG LAIN (balasan baru, ban,
+    pemenang giveaway) memakai bahasa penerima, bukan bahasa
+    pengirim atau bahasa admin.
+  - Satuan durasi ikut bahasa: "2 jam" vs "2 h". Tanpa ini pesan
+    Inggris tetap menulis satuan Indonesia.
+================================================================
