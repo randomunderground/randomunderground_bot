@@ -5,6 +5,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
+# stdout tidak di-buffer, supaya banner startup (termasuk tujuan log channel)
+# langsung terlihat di "docker logs", bukan tertahan sampai buffer penuh.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY requirements_randomunderground.txt ./requirements.txt

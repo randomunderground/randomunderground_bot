@@ -1,4 +1,5 @@
 import os, io, re, math, random, asyncio, subprocess, tempfile, shutil, textwrap, time, logging
+from functools import wraps
 from pathlib import Path
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageDraw, ImageFont
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -319,27 +320,60 @@ async def username(update,context):
 async def quote(update,context): await update.message.reply_text('“Some things are better felt than explained.”')
 
 # ---------- handler registration ----------
+def _ban_guard(func):
+    """Blokir seluruh fitur creative untuk user yang sedang di-ban/mute.
+
+    Tanpa ini, user yang dibatasi masih bisa memakai render (boros CPU/disk)
+    walaupun sudah tidak bisa kirim menfess.
+    """
+    @wraps(func)
+    async def wrapper(update, context):
+        user = update.effective_user
+        if user is not None:
+            try:
+                from randomunderground_bot import block_if_banned
+            except Exception:
+                block_if_banned = None
+            if block_if_banned is not None:
+                try:
+                    if await block_if_banned(update, context, user):
+                        return
+                except Exception:
+                    logging.exception("Gagal memeriksa status ban di modul creative")
+        return await func(update, context)
+    return wrapper
+
+
 def register_creative_handlers(app):
     from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, filters
-    app.add_handler(CommandHandler('creative',creative_command))
-    app.add_handler(CommandHandler('jj',jj_command))
-    app.add_handler(CommandHandler('done',done_command))
-    app.add_handler(CommandHandler('jjmusic',jjmusic_command))
-    app.add_handler(CommandHandler('pfp',pfp_command))
-    app.add_handler(CommandHandler('story',story_command))
-    app.add_handler(CommandHandler('polaroid',polaroid_command))
-    app.add_handler(CommandHandler('photodump',dump_command))
-    app.add_handler(CommandHandler('sticker',sticker_command))
-    app.add_handler(CommandHandler('meme',meme_command))
-    app.add_handler(CommandHandler('8ball',eightball))
-    app.add_handler(CommandHandler('rate',rate))
-    app.add_handler(CommandHandler('ship',ship))
-    app.add_handler(CommandHandler('truthordare',truthordare))
-    app.add_handler(CommandHandler('wyr',wyr))
-    app.add_handler(CommandHandler('caption',caption))
-    app.add_handler(CommandHandler('bio',bio))
-    app.add_handler(CommandHandler('username',username))
-    app.add_handler(CommandHandler('quote',quote))
-    app.add_handler(CallbackQueryHandler(creative_callback,pattern=r'^(creative|jj|photo):'))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.AUDIO, audio_handler), group=0)
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO, creative_photo_handler), group=0)
+
+    _orig_add = app.add_handler
+
+    def add_handler(handler, *args, **kwargs):
+        cb = getattr(handler, "callback", None)
+        if cb is not None:
+            handler.callback = _ban_guard(cb)
+        return _orig_add(handler, *args, **kwargs)
+
+    add_handler(CommandHandler('creative',creative_command))
+    add_handler(CommandHandler('jj',jj_command))
+    add_handler(CommandHandler('done',done_command))
+    add_handler(CommandHandler('jjmusic',jjmusic_command))
+    add_handler(CommandHandler('pfp',pfp_command))
+    add_handler(CommandHandler('story',story_command))
+    add_handler(CommandHandler('polaroid',polaroid_command))
+    add_handler(CommandHandler('photodump',dump_command))
+    add_handler(CommandHandler('sticker',sticker_command))
+    add_handler(CommandHandler('meme',meme_command))
+    add_handler(CommandHandler('8ball',eightball))
+    add_handler(CommandHandler('rate',rate))
+    add_handler(CommandHandler('ship',ship))
+    add_handler(CommandHandler('truthordare',truthordare))
+    add_handler(CommandHandler('wyr',wyr))
+    add_handler(CommandHandler('caption',caption))
+    add_handler(CommandHandler('bio',bio))
+    add_handler(CommandHandler('username',username))
+    add_handler(CommandHandler('quote',quote))
+    add_handler(CallbackQueryHandler(creative_callback,pattern=r'^(creative|jj|photo):'))
+    add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.AUDIO, audio_handler), group=0)
+    add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO, creative_photo_handler), group=0)

@@ -1,0 +1,237 @@
+================================================================
+RANDOM UNDERGROUND BOT - LOG CHANNEL, WHOIS, BAN
+================================================================
+
+MASALAH YANG DISELESAIKAN
+  Menfess bersifat anonim ke publik, tapi bot SELALU tahu siapa
+  pengirimnya (kolom menfess.sender_id dan
+  discussion_messages.author_user_id). Sebelumnya tidak ada cara
+  bagi owner untuk membaca data itu. Sekarang ada tiga jalur:
+
+    1. LOG CHANNEL  - jejak otomatis, permanen, lengkap dengan tombol aksi
+    2. /whois       - lacak manual dari postingan / komentar / user id
+    3. BAN          - ban, mute, shadowban, warning
+
+  Catatan privasi: log channel berisi isi menfess + identitas
+  pengirimnya. Jangan pernah menambahkan orang lain ke channel itu,
+  dan jangan pakai channel publik.
+
+----------------------------------------------------------------
+1. SETUP LOG CHANNEL (sekali saja)
+----------------------------------------------------------------
+  Pakai CHANNEL PRIVAT dengan kamu sebagai satu-satunya anggota.
+  Identitas pengirim menfess cuma kelihatan oleh kamu.
+
+  CARA OTOMATIS (tidak perlu menyalin id, tidak perlu restart)
+    a. Telegram -> New Channel -> tipe PRIVATE, misal "RU MODLOG".
+       Jangan undang siapa pun.
+    b. Tambahkan bot sebagai ADMIN. Bot TIDAK bisa dimasukkan
+       sebagai subscriber; di channel, bot hanya bisa jadi admin:
+         nama channel -> Manage Channel -> Administrators
+         -> Add Admin -> ketik username lengkap bot
+       Izin: Post Messages + Delete Messages.
+    c. Begitu bot masuk, bot langsung mengirim ke DM kamu:
+
+           🔎 Bot terdeteksi di chat baru
+           Nama : RU MODLOG
+           Tipe : channel
+           Id   : -1002345678901
+           [✓ JADIKAN LOG CHANNEL]  [✕ ABAIKAN]
+
+    d. Tekan JADIKAN LOG CHANNEL. Selesai.
+
+    Sebelum menyimpan, bot memastikan dirinya benar-benar bisa
+    memposting ke sana dan mengirim satu entri uji. Kalau gagal,
+    pengaturan lama dikembalikan dan bot memberi tahu apa yang
+    kurang, jadi log tidak pernah diam-diam hilang.
+
+    Kalau tawaran otomatis terlewat (misal bot sudah lebih dulu
+    ditambahkan), posting apa saja di channel itu. Bot membaca
+    postingan tersebut dan mengirim tawaran yang sama.
+
+  CARA MANUAL
+    /setlog -1002345678901
+    /setlog                 (di dalam grup tujuan)
+    reply sebuah forward dari channel tujuan dengan /setlog
+    /unsetlog               (kembalikan log ke DM owner)
+    /logtest                (cek tujuan log saat ini)
+
+  Pengaturan ini disimpan di tabel bot_settings di database, jadi
+  BERTAHAN walau container di-restart atau dibangun ulang. Env
+  RANDOMUNDERGROUND_LOG_CHAT_ID masih dipakai sebagai cadangan.
+
+  Urutan prioritas tujuan log:
+    1. pengaturan di database (tombol / /setlog)
+    2. env RANDOMUNDERGROUND_LOG_CHAT_ID
+    3. DM owner pertama
+
+  KONSEKUENSI MEMILIH CHANNEL (bukan grup)
+    - TOMBOL aksi di setiap entri log JALAN NORMAL di channel.
+      Ban / mute / shadowban / warning / hapus post / riwayat
+      semuanya bisa dikerjakan tanpa keluar dari channel.
+    - PERINTAH teks (/whois, /ban, /setlog, dst) TIDAK jalan kalau
+      diketik di dalam channel. python-telegram-bot hanya
+      meneruskan update "message" ke CommandHandler, sedangkan
+      postingan channel datang sebagai "channel_post". Ketik
+      perintah di DM bot.
+    - Praktiknya: baca log di channel, tekan tombol di channel,
+      buka DM bot hanya kalau perlu perintah manual.
+
+  Kalau suatu saat lebih suka perintah teks ikut jalan di tempat
+  log, ganti channel dengan GRUP privat (isi cuma kamu). Semua
+  fitur lain identik.
+
+----------------------------------------------------------------
+2. ISI LOG CHANNEL
+----------------------------------------------------------------
+  Yang dicatat otomatis:
+    - SETIAP menfess yang tayang, dengan identitas pengirim
+    - menfess yang ditahan karena pengirimnya shadowban
+    - komentar yang dihapus filter kata terlarang
+    - komentar dari user yang sedang dibatasi
+    - setiap tindakan moderasi (ban/mute/unban/warning)
+
+  Bentuk satu entri:
+
+      ◈ MENFESS BARU  #RU1482
+
+      👤 Aldi (@aldi_xyz)
+      🆔 123456789
+      🔗 Buka profil
+      📅 Terdaftar di bot: 01 Agu 2026 19:22
+      📊 24 menfess · 61 komentar · 3 menfess/24 jam
+      ⚠️ Warning: 1/3
+      🚫 Status: Tidak ada pembatasan aktif
+
+      💬 #random jualan followers murah, minat DM
+
+      🔗 Lihat postingan
+
+      [🚫 BAN]      [🔇 MUTE 24J]
+      [👻 SHADOWBAN] [⚠️ WARNING]
+      [🔎 RIWAYAT]   [🗑 HAPUS POST]
+      [✓ BEBASKAN]
+
+  Kode #RU1482 itu id menfess. Bisa dipakai langsung:
+  /whois #RU1482
+
+  Komentar TIDAK dicatat semuanya secara default, karena jumlahnya
+  jauh lebih banyak dari menfess dan bikin log banjir. Untuk mencatat
+  semuanya: RANDOMUNDERGROUND_LOG_ALL_COMMENTS=1
+
+----------------------------------------------------------------
+3. /whois - LACAK PENGIRIM
+----------------------------------------------------------------
+  Empat cara, semuanya owner-only:
+
+  a. Dari postingan channel
+     Forward postingannya ke DM bot, lalu reply forward itu
+     dengan /whois
+
+  b. Dari komentar di grup diskusi
+     Reply komentarnya dengan /whois
+     Jalan juga untuk balasan anonim yang dikirim lewat bot.
+
+  c. Dari kode menfess di log channel
+     /whois #RU1482
+
+  d. Langsung
+     /whois 123456789                              (user id)
+     /whois @username                              (kalau pernah /start)
+     /whois https://t.me/randomunderground/3391    (link postingan)
+
+  Jawabannya berisi identitas, statistik, status pembatasan, 5 menfess
+  terakhir, 5 komentar terakhir, dan riwayat moderasinya.
+
+  Batasan: kalau pesannya tidak pernah masuk database bot (misal
+  dikirim langsung ke grup sebelum bot jadi admin), pengirimnya tidak
+  bisa dilacak lewat reply. Pakai user id.
+
+----------------------------------------------------------------
+4. BAN / MUTE / SHADOWBAN
+----------------------------------------------------------------
+  Tiga mode, beda kegunaan:
+
+  BAN (permanen)
+      Tidak bisa pakai bot sama sekali. Diberi tahu alasannya.
+      Kalau bot punya izin Ban Users, orangnya juga dikeluarkan dari
+      grup diskusi.
+          /ban 123456789 promosi jualan
+          /ban alasan...            (sambil reply pesannya)
+
+  MUTE (sementara)
+      Sama seperti ban tapi otomatis lepas sendiri. Default 24 jam.
+          /mute 123456789 12 spam komentar
+          /mute 6 alasan...         (sambil reply pesannya)
+
+  SHADOWBAN
+      Paling efektif untuk spammer keras kepala. User melihat
+      "✓ Menfess kamu terkirim!" seperti biasa, tapi pesannya tidak
+      pernah tayang dan tidak pernah dapat poin. Karena tidak sadar
+      diblokir, dia tidak bikin akun baru.
+          /shadowban 123456789 spam jualan
+
+  CABUT
+          /unban 123456789
+
+  WARNING
+          /warn 123456789 off topic
+          /resetwarn 123456789
+
+  Semua perintah di atas juga bisa dipakai dengan cara reply ke pesan
+  target, tanpa menulis id. Atau tinggal tekan tombolnya di log channel.
+
+  Owner tidak bisa di-ban. Mute yang habis masa berlakunya lepas
+  sendiri, tidak perlu /unban.
+
+----------------------------------------------------------------
+5. PERINTAH LENGKAP
+----------------------------------------------------------------
+  /whois        lacak identitas pengirim
+  /ban          ban permanen
+  /mute         bisukan sementara (default 24 jam)
+  /shadowban    pesan tidak tayang, user tidak diberi tahu
+  /unban        cabut semua pembatasan
+  /warn         tambah warning
+  /resetwarn    nolkan warning
+  /banlist      daftar user yang sedang dibatasi
+  /modlog       riwayat tindakan moderasi
+  /modhelp      ringkasan perintah ini di dalam bot
+  /setlog       pasang log channel (tanpa restart)
+  /unsetlog     kembalikan log ke DM owner
+  /logtest      cek log channel sudah jalan
+  /id           tampilkan chat id (untuk setup; reply sebuah
+                forward untuk dapat id channel asalnya)
+
+  Tersedia juga lewat tombol: MENU -> OWNER CONTROL -> MODERASI
+
+----------------------------------------------------------------
+6. TABEL BARU DI DATABASE
+----------------------------------------------------------------
+  bans(user_id, mode, banned_until, reason, actor_id, created_at)
+      mode: ban | mute | shadow. banned_until 0 = permanen.
+
+  bot_settings(key, value)
+      Pengaturan runtime. Kunci yang dipakai:
+        log_chat_id        tujuan log moderasi
+        offered_log:<id>   penanda chat sudah pernah ditawarkan,
+                           supaya owner tidak ditawari berulang
+
+  mod_actions(id, actor_id, target_id, action, detail, created_at)
+      Riwayat permanen semua tindakan moderasi, termasuk yang
+      otomatis dilakukan bot (actor_id 0).
+
+  Dibuat otomatis oleh init_db() saat bot start. Data lama tidak
+  disentuh sama sekali.
+
+----------------------------------------------------------------
+7. YANG MASIH BELUM ADA
+----------------------------------------------------------------
+  - Filter kata masih daftar statis 25 kata, buta konteks. Promosi,
+    judi, link, dan konten di luar konteks tetap lolos dan harus
+    ditangani manual dari log channel.
+  - Belum ada tombol "Lapor" untuk member.
+  - Belum ada mode approval (menfess masuk antrean sebelum tayang).
+  - Belum ada role moderator; semua masih owner-only.
+  - Belum ada giveaway.
+================================================================

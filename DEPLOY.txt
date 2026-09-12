@@ -55,10 +55,23 @@ PRINSIP
         --restart unless-stopped \
         -e RANDOMUNDERGROUND_BOT_TOKEN="$RANDOMUNDERGROUND_BOT_TOKEN" \
         -e RANDOMUNDERGROUND_DATA_DIR=/app/data \
+        -e RANDOMUNDERGROUND_LOG_CHAT_ID="$RANDOMUNDERGROUND_LOG_CHAT_ID" \
         -v "$PWD/data:/app/data" \
         randomunderground-bot:latest
 
   Catatan: -v butuh path absolut. Sesuaikan bila project dipindah.
+
+  ENV OPSIONAL
+    RANDOMUNDERGROUND_LOG_CHAT_ID
+        Chat id grup/channel privat tempat log moderasi dikirim.
+        Kalau kosong, log jatuh ke DM owner pertama. Cara dapat id:
+        undang bot ke grup log lalu kirim /id di situ.
+        Lihat MODERASI.txt.
+
+    RANDOMUNDERGROUND_LOG_ALL_COMMENTS
+        1 = catat SEMUA komentar ke log channel.
+        0 (default) = hanya komentar bermasalah (kena filter kata,
+        atau dari user yang sedang dibatasi).
 
 ----------------------------------------------------------------
 5. RESTART SETELAH UBAH KODE
