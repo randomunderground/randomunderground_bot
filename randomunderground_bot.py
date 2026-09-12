@@ -889,9 +889,21 @@ STRINGS = {
             "channel."
         ),
     },
+    # Balasan anonim menerima sticker; menfess tidak, karena menfess wajib
+    # diawali hashtag dan sticker tidak punya teks.
     "text_or_photo": {
-        "id": "Boleh kirim teks atau foto + caption.",
-        "en": "You can send text, or a photo with a caption.",
+        "id": "Boleh kirim teks, foto + caption, atau sticker.",
+        "en": "You can send text, a photo with a caption, or a sticker.",
+    },
+    "menfess_text_or_photo": {
+        "id": (
+            "Menfess cuma bisa teks atau foto + caption, karena wajib "
+            "diawali hashtag."
+        ),
+        "en": (
+            "A post can only be text or a photo with a caption, because it "
+            "must start with a hashtag."
+        ),
     },
     "btn_view_post": {"id": "⟡ LIHAT POSTINGAN", "en": "⟡ VIEW POST"},
 
@@ -1105,6 +1117,23 @@ STRINGS = {
         "en": "Reason recorded: {reason}. Thanks!",
     },
     "btn_report": {"id": "⚠️ LAPOR", "en": "⚠️ REPORT"},
+    "media_sticker": {"id": "Sticker", "en": "Sticker"},
+    "media_gif": {"id": "GIF", "en": "GIF"},
+    "media_photo": {"id": "Foto", "en": "Photo"},
+    "media_video": {"id": "Video", "en": "Video"},
+    "media_videonote": {"id": "Video pesan", "en": "Video message"},
+    "media_voice": {"id": "Pesan suara", "en": "Voice message"},
+    "media_audio": {"id": "Audio", "en": "Audio"},
+    "media_document": {"id": "Dokumen", "en": "File"},
+    "media_poll": {"id": "Polling", "en": "Poll"},
+    "media_dice": {"id": "Dadu", "en": "Dice"},
+    "media_contact": {"id": "Kontak", "en": "Contact"},
+    "media_location": {"id": "Lokasi", "en": "Location"},
+    "media_other": {"id": "Pesan baru", "en": "New message"},
+    "reply_sticker_ok": {
+        "id": "Sticker kamu sudah dikirim secara anonim.",
+        "en": "Your sticker was sent anonymously.",
+    },
     "btn_report_menu": {"id": "⚠️ LAPOR POSTINGAN", "en": "⚠️ REPORT A POST"},
     "report_how": {
         "id": (
@@ -2943,6 +2972,56 @@ def identity_block(user_id, user_row=None):
     return "\n".join(lines)
 
 
+def describe_media(message, lang=None):
+    """Label singkat untuk pesan non-teks: "Sticker 😂", "Foto", dan seterusnya.
+
+    Dipakai untuk isi yang disimpan ke database dan untuk pratinjau di
+    notifikasi. Tanpa ini, komentar berupa sticker tercatat dengan isi
+    kosong, dan notifikasinya cuma berbunyi "Pesan baru".
+
+    PENTING: hasil fungsi ini TIDAK boleh dipakai untuk menghitung poin.
+    event_activity_is_valid harus tetap menerima teks asli, supaya sticker
+    dan media lain tidak bisa dipakai memanen poin.
+    """
+    if message is None:
+        return ""
+
+    sticker = getattr(message, "sticker", None)
+    if sticker is not None:
+        emoji = getattr(sticker, "emoji", None) or ""
+        label = t("media_sticker", lang)
+        return f"{label} {emoji}".strip()
+
+    # animation juga mengisi document, jadi diperiksa lebih dulu.
+    for atribut, kunci in (
+        ("animation", "media_gif"),
+        ("photo", "media_photo"),
+        ("video_note", "media_videonote"),
+        ("video", "media_video"),
+        ("voice", "media_voice"),
+        ("audio", "media_audio"),
+        ("poll", "media_poll"),
+        ("dice", "media_dice"),
+        ("contact", "media_contact"),
+        ("location", "media_location"),
+        ("document", "media_document"),
+    ):
+        if getattr(message, atribut, None):
+            return t(kunci, lang)
+
+    return ""
+
+
+def message_preview(message, lang=None, limit=250):
+    """Pratinjau isi pesan untuk notifikasi dan log."""
+    teks = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if not teks:
+        teks = describe_media(message, lang) or t("media_other", lang)
+    if len(teks) > limit:
+        teks = teks[:limit] + "…"
+    return teks
+
+
 def channel_post_url(channel_message_id):
     return (
         f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}/{channel_message_id}"
@@ -3348,7 +3427,7 @@ async def moderate_message(message, context):
     await log_comment(
         context.bot,
         message.from_user,
-        text,
+        text or describe_media(message, DEFAULT_LANG),
         None,
         None,
         note=f"DIHAPUS OTOMATIS · {alasan} · warning {warning_no}/{MAX_COMMENT_WARNINGS}",
@@ -4677,6 +4756,9 @@ async def process_private_comment_reply(update, context, db_id):
         return
 
     text = update.message.text or update.message.caption or ""
+    # Sticker tidak bisa disaring isinya; yang bisa dipastikan hanya bahwa
+    # pengirimnya tidak sedang dibatasi, dan itu sudah dicek di
+    # message_handler sebelum sampai ke sini.
     if contains_bad_word(text):
         await update.message.reply_text(t("reply_blocked_words", lang))
         return
@@ -4717,6 +4799,15 @@ async def process_private_comment_reply(update, context, db_id):
                 reply_to_message_id=target_message_id,
                 allow_sending_without_reply=False,
             )
+        elif update.message.sticker:
+            # Sticker tidak bisa diberi prefix "↳", tapi hubungan reply-nya
+            # sudah cukup menandai bahwa ini balasan.
+            sent = await context.bot.send_sticker(
+                chat_id=discussion_chat_id,
+                sticker=update.message.sticker.file_id,
+                reply_to_message_id=target_message_id,
+                allow_sending_without_reply=False,
+            )
         else:
             await update.message.reply_text(t("text_or_photo", lang))
             return
@@ -4727,13 +4818,16 @@ async def process_private_comment_reply(update, context, db_id):
             message_id=sent.message_id,
             parent_message_id=target_message_id,
             author_user_id=user.id,
-            content=text,
+            content=text or describe_media(update.message, DEFAULT_LANG),
         )
         record_activity(user.id, "comment", source_id=db_id)
         if event_activity_is_valid(update.message.text or update.message.caption or "", "comment"):
             add_event_points(user.id, comment=1, menfess_id=db_id)
 
-        await update.message.reply_text(t("reply_sent", lang))
+        await update.message.reply_text(
+            t("reply_sticker_ok", lang) if update.message.sticker
+            else t("reply_sent", lang)
+        )
 
         # Balasan anonim dikirim oleh bot sendiri, dan
         # discussion_comment_handler melewati pesan dari bot. Tanpa blok ini
@@ -4748,12 +4842,8 @@ async def process_private_comment_reply(update, context, db_id):
                     discussion_chat_id, sent.message_id
                 )
                 if balasan_db:
-                    preview = text.strip()
-                    if not preview:
-                        preview = "Foto" if update.message.photo else "Pesan baru"
-                    if len(preview) > 250:
-                        preview = preview[:250] + "…"
                     target_lang = get_user_lang(target_user_id)
+                    preview = message_preview(update.message, target_lang)
                     await context.bot.send_message(
                         target_user_id,
                         t("new_reply", target_lang, preview=preview),
@@ -4874,7 +4964,7 @@ async def process_new_menfess(update, context):
                 caption_entities=message.caption_entities,
             )
         else:
-            await message.reply_text(t("text_or_photo", lang))
+            await message.reply_text(t("menfess_text_or_photo", lang))
             return
 
         menfess_id = create_menfess(user.id, sent.message_id, content)
@@ -4979,7 +5069,8 @@ async def discussion_comment_handler(update, context):
         await log_comment(
             context.bot,
             message.from_user,
-            message.text or message.caption or "",
+            message.text or message.caption
+            or describe_media(message, DEFAULT_LANG),
             None,
             None,
             note=f"DIHAPUS · user {BAN_MODE_LABEL.get(ban['mode'], ban['mode'])}",
@@ -5016,7 +5107,12 @@ async def discussion_comment_handler(update, context):
         message_id=message.message_id,
         parent_message_id=parent.message_id,
         author_user_id=message.from_user.id,
-        content=(message.text or message.caption or ""),
+        # Media disimpan sebagai label supaya log channel dan riwayat
+        # /whois tetap terbaca, bukan baris kosong.
+        content=(
+            message.text or message.caption
+            or describe_media(message, DEFAULT_LANG)
+        ),
     )
     record_activity(message.from_user.id, "comment", source_id=message.message_id)
     if event_activity_is_valid(message.text or message.caption or "", "comment"):
@@ -5027,7 +5123,8 @@ async def discussion_comment_handler(update, context):
         await log_comment(
             context.bot,
             message.from_user,
-            message.text or message.caption or "",
+            message.text or message.caption
+            or describe_media(message, DEFAULT_LANG),
             menfess,
             logged["id"] if logged else None,
         )
@@ -5042,15 +5139,6 @@ async def discussion_comment_handler(update, context):
     if target_user_id == message.from_user.id:
         return
 
-    preview = (
-        message.text
-        or message.caption
-        or ("Foto" if message.photo else "Pesan baru")
-    )
-    preview = preview.strip()
-    if len(preview) > 250:
-        preview = preview[:250] + "…"
-
     try:
         comment_db = find_discussion_message(
             message.chat.id, message.message_id
@@ -5059,6 +5147,7 @@ async def discussion_comment_handler(update, context):
             return
 
         target_lang = get_user_lang(target_user_id)
+        preview = message_preview(message, target_lang)
         await context.bot.send_message(
             target_user_id,
             t("new_reply", target_lang, preview=preview),
@@ -8076,7 +8165,8 @@ def main():
 
     app.add_handler(
         MessageHandler(
-            filters.ChatType.PRIVATE & (filters.TEXT | filters.PHOTO),
+            filters.ChatType.PRIVATE
+            & (filters.TEXT | filters.PHOTO | filters.Sticker.ALL),
             message_handler,
         )
     )

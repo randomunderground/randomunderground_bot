@@ -358,7 +358,12 @@ MASALAH YANG DISELESAIKAN
   - Belum ada mode approval (menfess masuk antrean sebelum tayang).
   - Belum ada role moderator; semua masih owner-only.
   - Filter kata kasar masih daftar statis 25 kata dan belum ada
-    normalisasi leetspeak, jadi "k0nt0l" masih lolos. Filter
+    normalisasi leetspeak, jadi "k0nt0l" masih lolos.
+  - STICKER TIDAK BISA DISARING ISINYA. Bot hanya melihat emoji dan
+    file_id-nya, bukan gambarnya, jadi sticker tidak sopan lolos dari
+    filter otomatis. Yang tetap berlaku: sticker dari user yang
+    dibatasi ikut dihapus, dan sticker bisa dilaporkan member lewat
+    /lapor karena tercatat sebagai komentar berlabel "Sticker 😂". Filter
     promosi/judi/kontak (bagian 9) sudah otomatis.
   - Panel owner, log channel, dan bagian peringkat/profil/komunitas
     masih Bahasa Indonesia saja. Alur member sudah dua bahasa,
