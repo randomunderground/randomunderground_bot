@@ -1518,15 +1518,100 @@ QOTD = [
 # langsung kelihatan sebagai angka, dan diskusi "kenapa" tetap jalan di
 # kolom komentar postingan poll itu.
 #
+# Nadanya sengaja satir dan menyentuh wilayah abu-abu, karena itu yang bikin
+# orang berhenti scroll: dilema disclosure, sindiran ke korporat dan
+# pengawasan, debat pembajakan, dan humor gelap soal opsec sendiri.
+#
+# Yang sengaja TIDAK ada di sini: poll berbentuk rekrutmen untuk kejahatan
+# nyata, atau yang memancing member mengaku melakukan tindak pidana terhadap
+# korban tertentu. Poll di channel memang anonim, tapi rules kita sendiri
+# menyatakan setiap kiriman tercatat, jadi pertanyaan semacam itu jadi jebakan
+# buat anggota sendiri, bukan bahan obrolan.
+#
 # Batas Bot API: pertanyaan maksimal 300 karakter, tiap opsi maksimal 100,
 # dan jumlah opsi 2 sampai 10. Poll di channel wajib anonim.
 QUIET_POLLS = [
+    # ---- dilema disclosure & grey hat ----
+    ("Nemu bug kritikal di bank. Bounty-nya 500rb, tapi ada yang nawar 50 juta. Kamu?",
+     ["Ambil bounty", "Ambil yang 50 juta", "Publish gratis biar rame"]),
+    ("Perusahaan nolak bayar bounty kamu dan bilang \"itu bukan bug\". Kamu?",
+     ["Diem aja", "Full disclosure", "Lapor ke regulator"]),
+    ("Kamu dikasih akses admin yang seharusnya nggak boleh kamu punya. Kamu?",
+     ["Lapor sekarang", "Pakai dulu, lapor nanti", "Diem dan nikmati"]),
+    ("Perusahaan lama belum cabut akses kamu setelah resign. Kamu?",
+     ["Kabarin mereka", "Diem aja", "Login sekali buat mastiin"]),
+    ("Client minta kamu \"pentest\" web kompetitornya. Bayarannya gede.",
+     ["Tolak", "Terima", "Terima kalau ada surat izin"]),
+    ("Nemu celah di sistem kampus/kantor sendiri. Kamu?",
+     ["Lapor resmi", "Kasih tau diam-diam", "Simpan buat jaga-jaga"]),
+    ("Hacktivism itu?",
+     ["Aktivisme yang sah", "Kriminal", "Tergantung targetnya"]),
+    ("Menurut kamu batas red team itu di mana?",
+     ["Surat izin", "Niat baik cukup", "Nggak ada batas kalau demi bukti"]),
+
+    # ---- sindiran korporat & pengawasan ----
+    ("Kalau bisa hapus database satu jenis perusahaan dari muka bumi, pilih mana?",
+     ["Data broker", "Perusahaan sosmed", "Credit scoring"]),
+    ("Perusahaan bocorin data 10 juta orang. Hukuman yang pantas?",
+     ["Denda sampai bangkrut", "Direksinya dipenjara", "Wajib open source semua kodenya"]),
+    ("\"Kami sangat menghargai privasi Anda\" itu?",
+     ["Basa-basi hukum", "Bohong terang-terangan", "Kadang tulus"]),
+    ("Cookie banner itu sebenarnya?",
+     ["Perlindungan privasi", "Teater kepatuhan", "Siksaan"]),
+    ("\"Tidak ada indikasi kebocoran data\" biasanya berarti?",
+     ["Memang aman", "Belum dicek", "Udah dicek dan panik"]),
+    ("Pemerintah minta backdoor. Perusahaan harus?",
+     ["Nurut", "Nolak walau kena sanksi", "Pindah yurisdiksi"]),
+    ("Kalau data pribadi kamu dijual, kamu mending?",
+     ["Dapat bagi hasil", "Dilarang total"]),
+    ("Mana yang paling pengen kamu hapus dari internet?",
+     ["Semua tracker iklan", "Semua paywall", "Semua captcha"]),
+    ("Yang paling sering bikin sistem di sini jebol?",
+     ["Anggaran IT", "Orangnya", "Vendornya"]),
+    ("Aplikasi pemerintah minta izin akses kontak dan kamera. Kamu?",
+     ["Kasih aja", "Tolak, cari cara lain", "Pasang di HP kosong"]),
+    ("Sertifikasi keamanan yang mahal itu?",
+     ["Investasi", "Pajak buat lolos HR", "Penipuan legal"]),
+
+    # ---- debat pembajakan & wilayah abu-abu ----
+    ("Software bajakan buat belajar itu?",
+     ["Sah-sah aja", "Tetap salah", "Salah vendornya, harganya nggak masuk"]),
+    ("Sci-Hub itu?",
+     ["Perpustakaan", "Pembajakan", "Dua-duanya, dan tetap perlu"]),
+    ("Adblock itu mencuri?",
+     ["Iya", "Nggak", "Iya, tapi bodo amat"]),
+    ("VPN buat pindah region layanan streaming?",
+     ["Wajar", "Curang"]),
+    ("Kamu masih nyimpen folder \"backup\" yang isinya bukan backup?",
+     ["Iya", "Nggak", "Nggak akan gw jawab di sini"]),
+    ("Paywall jurnal ilmiah itu?",
+     ["Wajar, riset butuh biaya", "Perampokan dana publik"]),
+
+    # ---- humor gelap soal opsec sendiri ----
+    ("Jujur, password kamu sekarang?",
+     ["Random dari manager", "Ada pola yang kamu kira aman", "Sama kayak 5 tahun lalu"]),
+    ("Berapa akun kamu yang masih pakai password yang sama?",
+     ["Nol", "Dua sampai lima", "Jangan tanya"]),
+    ("Sticky note berisi password di monitor itu?",
+     ["Dosa besar", "Realistis", "Lebih aman dari cloud"]),
+    ("Pernah nge-push credential ke repo publik?",
+     ["Belum pernah", "Pernah, udah dirotasi", "Pernah, dan baru sadar sekarang"]),
+    ("Laptop kerja kamu, jujur isinya?",
+     ["Cuma software kantor", "Ada yang nggak resmi", "Dua dunia sekaligus"]),
+    ("2FA kamu aktif di berapa akun?",
+     ["Hampir semua", "Yang penting aja", "Apa itu 2FA"]),
+    ("Terakhir kamu backup data penting?",
+     ["Minggu ini", "Tahun lalu", "Backup apa"]),
+    ("Kamu baca Terms of Service?",
+     ["Selalu", "Kadang", "Belum pernah sekali pun"]),
+    ("Webcam kamu ditutup?",
+     ["Ditutup", "Nggak", "Nggak, dan sekarang jadi mikir"]),
+
+    # ---- pilih pihak klasik ----
     ("Buat kerjaan sehari-hari, kamu pilih mana?",
      ["Linux", "Windows", "macOS"]),
-    ("Nemu celah di web orang lain, kamu ngapain?",
-     ["Laporin ke pemiliknya", "Publish ke publik", "Diem aja"]),
     ("Enkripsi harus punya backdoor buat penegak hukum?",
-     ["Harus, demi penegakan hukum", "Jangan pernah, sekali dibuka rusak semua"]),
+     ["Harus", "Jangan pernah, sekali dibuka rusak semua"]),
     ("Password manager kamu yang mana?",
      ["Cloud (Bitwarden, 1Password)", "Offline (KeePass)", "Nggak pakai"]),
     ("Kalau harus pilih satu, kamu di tim mana?",
@@ -1555,8 +1640,10 @@ QUIET_POLLS = [
      ["Lengserkan CEO Google", "Naikkan domain kita ke halaman satu"]),
     ("Buat kerja harian, kamu lebih sering pakai?",
      ["Terminal", "GUI"]),
-    ("Menurut kamu, sertifikasi itu?",
-     ["Penting buat dapat kerja", "Kalah sama pengalaman langsung"]),
+    ("AI nulis kode kamu. Jujur, sekarang?",
+     ["Nggak pakai", "Pakai tapi gw baca", "Pakai dan gw percaya aja"]),
+    ("Scammer call center itu?",
+     ["Pelaku", "Korban juga", "Tergantung"]),
 ]
 
 MISSION_POOL = [
