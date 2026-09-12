@@ -1,0 +1,148 @@
+================================================================
+RANDOM UNDERGROUND BOT - GIVEAWAY
+================================================================
+
+BEDA DENGAN EVENT
+  Event  = leaderboard poin, pemenang ditentukan peringkat.
+  Giveaway = undian, pemenang diacak dari peserta yang mendaftar.
+  Keduanya bisa jalan bersamaan dan tidak saling mengganggu.
+
+----------------------------------------------------------------
+1. CARA BIKIN
+----------------------------------------------------------------
+  /giveaway_start  (atau OWNER CONTROL -> 🎁 GIVEAWAY -> BUAT)
+
+  Wizard 6 langkah:
+    1. Nama          -> "Giveaway Saldo 50K"
+    2. Hadiah        -> "Saldo DANA 50K"
+    3. Jumlah pemenang -> angka 1-50
+    4. Durasi        -> berapa jam pendaftaran dibuka (1-720)
+    5. Cara mengundi -> tombol:
+         🎲 UNDIAN ACAK   semua peserta peluang sama
+         🎟 UNDIAN TIKET  makin aktif makin besar peluang
+    6. Siapa yang boleh ikut -> tombol preset:
+         Bebas   subscribe channel saja
+         Ringan  1 menfess + 3 komentar, akun min 1 hari, join grup
+         Ketat   3 menfess + 10 komentar, akun min 3 hari, join grup
+
+  Selesai wizard, bot otomatis posting ke channel dengan tombol
+  IKUT GIVEAWAY dan countdown. Kalau posting gagal (bot bukan admin
+  lagi), giveaway dibatalkan otomatis supaya tidak ada giveaway
+  hantu yang tidak terlihat siapa pun.
+
+  Hanya boleh ada SATU giveaway berjalan. Selesaikan atau batalkan
+  dulu sebelum bikin yang baru.
+
+----------------------------------------------------------------
+2. MODE TIKET
+----------------------------------------------------------------
+  1 menfess  = 2 tiket
+  1 komentar = 1 tiket
+  ikut saja  = 1 tiket (semua peserta dijamin punya peluang)
+  batas atas = 50 tiket per orang
+
+  Yang dihitung hanya aktivitas SELAMA periode giveaway, dan
+  dihitung saat PENGUNDIAN, bukan saat mendaftar. Jadi orang yang
+  aktif setelah ikut tetap dihargai.
+
+  Batas 50 tiket itu penting: tanpa itu, satu orang yang spam bisa
+  menguasai undian dan giveaway jadi tidak menarik bagi yang lain.
+
+----------------------------------------------------------------
+3. UNDIAN BISA DIAUDIT
+----------------------------------------------------------------
+  Saat pengundian, bot menyimpan:
+    - seed acak (draw_seed di tabel giveaways)
+    - jumlah tiket final setiap peserta (dibekukan ke
+      giveaway_entries)
+
+  Seed diumumkan di channel bersama hasil. Dengan seed + daftar
+  peserta + tiket, hasil undian bisa dihitung ulang dan dibuktikan
+  tidak diatur. Ini penting kalau ada yang menuduh giveaway settingan.
+
+  Sudah diuji: 3000 undian acak 3-dari-100 menghasilkan sebaran
+  merata (harapan 90 per orang, hasil 69-111, semua kebagian), dan
+  mode tiket dengan bobot 1 vs 10 menghasilkan rasio 9.3x.
+
+----------------------------------------------------------------
+4. SIAPA YANG TIDAK BISA IKUT
+----------------------------------------------------------------
+  - owner (tidak ikut undian sendiri)
+  - user yang sedang di-ban / mute / shadowban
+  - user yang belum pernah /start di bot
+      alasannya: pemenang harus bisa di-DM. Tanpa ini, hadiah bisa
+      jatuh ke orang yang tidak bisa dihubungi.
+  - user yang belum memenuhi preset syarat
+  - satu akun hanya bisa satu entri
+
+  Semua penolakan disampaikan sebagai popup pribadi, bukan pesan di
+  channel, jadi tidak ada yang dipermalukan di depan publik.
+
+----------------------------------------------------------------
+5. SETELAH DIUNDI
+----------------------------------------------------------------
+  - Postingan giveaway di channel diganti jadi pengumuman hasil,
+    tombol IKUT dicabut.
+  - Pemenang diumumkan di channel (@username) dan di-DM bot dengan
+    tombol KLAIM HADIAH.
+  - Pemenang wajib klaim dalam 24 jam (bisa diatur per giveaway).
+  - Lewat batas itu, pemenang ditandai gugur dan bot otomatis mengundi
+    PENGGANTI untuk peringkat yang kosong. Peringkat dipakai ulang,
+    jadi tidak muncul "pemenang nomor 4" di giveaway 3 pemenang.
+  - Pemenang yang sudah klaim tidak pernah diganti.
+  - Kalau peserta habis, bot mengumumkan hadiah tidak bisa diundi
+    ulang, bukan diam-diam gagal.
+  - Semua klaim dan hasil undian ikut tercatat di log channel.
+
+  CATATAN PRIVASI: giveaway TIDAK anonim. Username pemenang
+  diumumkan di channel. Ini diberitahukan ke peserta di popup saat
+  mereka menekan IKUT, jadi mereka ikut dengan sadar.
+
+----------------------------------------------------------------
+6. PERINTAH
+----------------------------------------------------------------
+  OWNER
+    /giveaway_start     buat giveaway baru (wizard)
+    /giveaway_status    info giveaway terkini + pemenang
+    /giveaway_entries   daftar peserta + tiketnya
+    /giveaway_draw      undi sekarang, tanpa menunggu deadline
+    /giveaway_reroll    undi ulang pemenang yang gugur
+    /giveaway_cancel    batalkan giveaway berjalan
+    /giveaway_help      ringkasan
+
+  SEMUA ORANG
+    /giveaway           lihat giveaway aktif + ikut dari DM
+
+  Tombol: OWNER CONTROL -> 🎁 GIVEAWAY
+
+----------------------------------------------------------------
+7. TABEL DATABASE
+----------------------------------------------------------------
+  giveaways(id, name, prize, winner_count, mode, require_channel,
+            require_discussion, min_menfess, min_comment,
+            min_age_days, claim_hours, created_at, ends_at, status,
+            channel_message_id, shown_count, draw_seed, drawn_at,
+            created_by)
+      status: open | drawn | cancelled
+
+  giveaway_entries(giveaway_id, user_id, tickets, joined_at)
+      tickets dibekukan saat pengundian untuk keperluan audit.
+
+  giveaway_winners(id, giveaway_id, user_id, rank, drawn_at,
+                   claimed_at, status)
+      status: pending | claimed | expired
+
+  Dibuat otomatis oleh init_db(). Data lama tidak disentuh.
+
+----------------------------------------------------------------
+8. CATATAN TEKNIS
+----------------------------------------------------------------
+  - Jumlah peserta di postingan channel diperbarui oleh watcher
+    setiap 30 detik, bukan setiap kali ada yang ikut. Mengedit
+    postingan tiap klik akan kena rate limit Telegram.
+  - Tombol giveaway diproses SEBELUM pengecekan ban global. Kalau
+    tidak, membalas user yang di-ban akan memposting "akun kamu
+    dibatasi" ke channel publik.
+  - Tombol berfungsi penuh di postingan channel; callback query
+    tetap membawa identitas penekannya.
+================================================================

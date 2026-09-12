@@ -2,7 +2,9 @@
 import os
 import asyncio
 import html
+import random
 import re
+import secrets
 import sqlite3
 import time
 import logging
@@ -310,6 +312,53 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             warnings INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS giveaways (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            prize TEXT NOT NULL,
+            winner_count INTEGER NOT NULL DEFAULT 1,
+            mode TEXT NOT NULL DEFAULT 'random',
+            require_channel INTEGER NOT NULL DEFAULT 1,
+            require_discussion INTEGER NOT NULL DEFAULT 0,
+            min_menfess INTEGER NOT NULL DEFAULT 0,
+            min_comment INTEGER NOT NULL DEFAULT 0,
+            min_age_days INTEGER NOT NULL DEFAULT 0,
+            claim_hours INTEGER NOT NULL DEFAULT 24,
+            created_at INTEGER NOT NULL,
+            ends_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            channel_message_id INTEGER,
+            shown_count INTEGER NOT NULL DEFAULT -1,
+            draw_seed TEXT,
+            drawn_at INTEGER,
+            created_by INTEGER NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS giveaway_entries (
+            giveaway_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            tickets INTEGER NOT NULL DEFAULT 1,
+            joined_at INTEGER NOT NULL,
+            PRIMARY KEY (giveaway_id, user_id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS giveaway_winners (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            giveaway_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            rank INTEGER NOT NULL,
+            drawn_at INTEGER NOT NULL,
+            claimed_at INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            UNIQUE(giveaway_id, user_id)
         )
     """)
 
@@ -2248,6 +2297,7 @@ def owner_panel_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("◆ EVENT", callback_data="owner_event")],
         [InlineKeyboardButton("⚡ FLASH EVENT", callback_data="owner:flash")],
+        [InlineKeyboardButton("🎁 GIVEAWAY", callback_data="owner_giveaway")],
         [InlineKeyboardButton("🛡 MODERASI", callback_data="owner_mod")],
         [InlineKeyboardButton("← MENU", callback_data="back_menu")],
     ])
@@ -2351,6 +2401,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_mod_callback(update, context, data)
         return
 
+    # Tombol giveaway menempel di postingan channel. Diproses sebelum
+    # block_if_banned karena umpan baliknya harus lewat toast, bukan pesan
+    # balasan yang akan terlihat publik di channel.
+    if data.startswith("gw:"):
+        await handle_giveaway_callback(update, context, data)
+        return
+
     if await block_if_banned(update, context, user):
         return
 
@@ -2417,6 +2474,164 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "⚙ OWNER PANEL\n\nPilih pengaturan:",
             reply_markup=owner_panel_menu(),
+        )
+        return
+
+    if data == "owner_giveaway":
+        if not is_owner(user.id):
+            return
+        gv = get_open_giveaway()
+        await query.message.reply_text(
+            giveaway_info_text(gv) if gv else
+            "🎁 GIVEAWAY\n\nBelum ada giveaway yang berjalan.",
+            reply_markup=owner_giveaway_menu(),
+        )
+        return
+
+    if data == "owner:gw_create":
+        if not is_owner(user.id):
+            return
+        if get_open_giveaway():
+            await query.message.reply_text(
+                "✕ Masih ada giveaway berjalan. Selesaikan atau batalkan dulu.",
+                reply_markup=owner_giveaway_menu(),
+            )
+            return
+        await start_giveaway_wizard(query, context)
+        return
+
+    if data == "owner:gw_cancel_wizard":
+        if not is_owner(user.id):
+            return
+        for k in ("gw_step", "gw_name", "gw_prize", "gw_winners", "gw_hours", "gw_mode"):
+            context.user_data.pop(k, None)
+        await query.message.reply_text(
+            "✕ Pembuatan giveaway dibatalkan.",
+            reply_markup=owner_giveaway_menu(),
+        )
+        return
+
+    if data.startswith("owner:gw_mode:"):
+        if not is_owner(user.id) or context.user_data.get("gw_step") != "mode":
+            return
+        context.user_data["gw_mode"] = data.rsplit(":", 1)[1]
+        context.user_data["gw_step"] = "preset"
+        await query.message.reply_text(
+            "Terakhir: siapa yang boleh ikut?",
+            reply_markup=giveaway_preset_menu(),
+        )
+        return
+
+    if data.startswith("owner:gw_preset:"):
+        if not is_owner(user.id) or context.user_data.get("gw_step") != "preset":
+            return
+        preset = data.rsplit(":", 1)[1]
+        if preset not in GIVEAWAY_PRESETS:
+            return
+        gv = create_giveaway(
+            name=context.user_data.pop("gw_name"),
+            prize=context.user_data.pop("gw_prize"),
+            winner_count=context.user_data.pop("gw_winners"),
+            duration_hours=context.user_data.pop("gw_hours"),
+            mode=context.user_data.pop("gw_mode", "random"),
+            preset_key=preset,
+            created_by=user.id,
+        )
+        context.user_data.pop("gw_step", None)
+        try:
+            await post_giveaway(context.bot, gv)
+        except Exception:
+            logging.exception("Gagal memposting giveaway ke channel")
+            set_giveaway_field(gv["id"], status="cancelled")
+            await query.message.reply_text(
+                "✕ Giveaway gagal diposting ke channel, jadi dibatalkan.\n\n"
+                "Pastikan bot masih admin di channel, lalu coba lagi.",
+                reply_markup=owner_giveaway_menu(),
+            )
+            return
+        await query.message.reply_text(
+            "✓ Giveaway dibuat dan sudah diposting ke channel.\n\n"
+            + giveaway_info_text(get_giveaway(gv["id"])),
+            reply_markup=owner_giveaway_menu(),
+        )
+        return
+
+    if data == "owner:gw_info":
+        if not is_owner(user.id):
+            return
+        gv = get_open_giveaway() or (list_giveaways(1) or [None])[0]
+        await query.message.reply_text(
+            giveaway_info_text(gv) if gv else "Belum ada giveaway.",
+            reply_markup=owner_giveaway_menu(),
+        )
+        return
+
+    if data == "owner:gw_entries":
+        if not is_owner(user.id):
+            return
+        gv = get_open_giveaway() or (list_giveaways(1) or [None])[0]
+        await query.message.reply_text(
+            giveaway_entries_text(gv) if gv else "Belum ada giveaway.",
+            reply_markup=owner_giveaway_menu(),
+        )
+        return
+
+    if data == "owner:gw_draw":
+        if not is_owner(user.id):
+            return
+        gv = get_open_giveaway()
+        if not gv:
+            await query.message.reply_text(
+                "Tidak ada giveaway berjalan.", reply_markup=owner_giveaway_menu()
+            )
+            return
+        await finish_giveaway(context.bot, gv["id"])
+        await query.message.reply_text(
+            "✓ Giveaway diundi. Hasilnya sudah diumumkan di channel.",
+            reply_markup=owner_giveaway_menu(),
+        )
+        return
+
+    if data == "owner:gw_cancel":
+        if not is_owner(user.id):
+            return
+        gv = get_open_giveaway()
+        if not gv:
+            await query.message.reply_text(
+                "Tidak ada giveaway berjalan.", reply_markup=owner_giveaway_menu()
+            )
+            return
+        set_giveaway_field(gv["id"], status="cancelled")
+        await close_giveaway_post(
+            context.bot, gv,
+            f"🎁 {gv['name']}\n\nGiveaway ini dibatalkan oleh admin. "
+            "Tidak ada pemenang yang diundi.",
+        )
+        await query.message.reply_text(
+            f"✓ Giveaway #{gv['id']} dibatalkan.",
+            reply_markup=owner_giveaway_menu(),
+        )
+        return
+
+    if data == "owner:gw_history":
+        if not is_owner(user.id):
+            return
+        rows = list_giveaways(10)
+        if not rows:
+            await query.message.reply_text(
+                "Belum pernah ada giveaway.", reply_markup=owner_giveaway_menu()
+            )
+            return
+        lines = ["RIWAYAT GIVEAWAY", ""]
+        for r in rows:
+            menang = [w for w in giveaway_winners(r["id"]) if w["status"] == "claimed"]
+            lines.append(
+                f"#{r['id']} {r['name']} — {r['status']}\n"
+                f"   {giveaway_entry_count(r['id'])} peserta · "
+                f"{len(menang)} klaim · {fmt_ts(r['created_at'])}"
+            )
+        await query.message.reply_text(
+            "\n".join(lines), reply_markup=owner_giveaway_menu()
         )
         return
 
@@ -2742,6 +2957,87 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await block_if_banned(update, context, user):
         context.user_data["waiting_message"] = False
         context.user_data["waiting_comment_reply"] = None
+        return
+
+    # Owner giveaway creation wizard.
+    if is_owner(user.id) and context.user_data.get("gw_step"):
+        raw = (update.message.text or "").strip()
+        step = context.user_data["gw_step"]
+
+        if step == "name":
+            if not raw or len(raw) > 120:
+                await update.message.reply_text(
+                    "✕ Nama giveaway 1–120 karakter.",
+                    reply_markup=giveaway_cancel_menu(),
+                )
+                return
+            context.user_data["gw_name"] = raw
+            context.user_data["gw_step"] = "prize"
+            await update.message.reply_text(
+                "Hadiahnya apa?\n\nContoh: Saldo DANA 50K",
+                reply_markup=giveaway_cancel_menu(),
+            )
+            return
+
+        if step == "prize":
+            if not raw or len(raw) > 200:
+                await update.message.reply_text(
+                    "✕ Hadiah 1–200 karakter.",
+                    reply_markup=giveaway_cancel_menu(),
+                )
+                return
+            context.user_data["gw_prize"] = raw
+            context.user_data["gw_step"] = "winners"
+            await update.message.reply_text(
+                "Berapa orang pemenangnya?\n\nKirim angka 1–50.",
+                reply_markup=giveaway_cancel_menu(),
+            )
+            return
+
+        if step == "winners":
+            try:
+                winners = int(raw)
+                if winners < 1 or winners > 50:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text(
+                    "✕ Kirim angka 1–50.",
+                    reply_markup=giveaway_cancel_menu(),
+                )
+                return
+            context.user_data["gw_winners"] = winners
+            context.user_data["gw_step"] = "hours"
+            await update.message.reply_text(
+                "Pendaftaran dibuka berapa jam?\n\n"
+                "Kirim angka 1–720 (720 jam = 30 hari).",
+                reply_markup=giveaway_cancel_menu(),
+            )
+            return
+
+        if step == "hours":
+            try:
+                hours = int(raw)
+                if hours < 1 or hours > 720:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text(
+                    "✕ Kirim angka 1–720.",
+                    reply_markup=giveaway_cancel_menu(),
+                )
+                return
+            context.user_data["gw_hours"] = hours
+            context.user_data["gw_step"] = "mode"
+            await update.message.reply_text(
+                "Pilih cara mengundi:",
+                reply_markup=giveaway_mode_menu(),
+            )
+            return
+
+        # step "mode" dan "preset" dijawab lewat tombol, bukan teks.
+        await update.message.reply_text(
+            "Pilih salah satu tombol di atas.",
+            reply_markup=giveaway_cancel_menu(),
+        )
         return
 
     # Owner event creation wizard.
@@ -3268,6 +3564,629 @@ def owner_only(func):
             return
         return await func(update, context)
     return wrapper
+
+
+# ============================================================
+# GIVEAWAY
+# ============================================================
+# Berbeda dari Event (yang murni leaderboard poin), giveaway adalah undian
+# dengan pendaftaran, syarat kelayakan, dan pemenang yang diundi.
+#
+# Undian dibuat BISA DIAUDIT: seed acak disimpan, dan jumlah tiket setiap
+# peserta dibekukan ke database saat pengundian. Dengan seed + tabel entri,
+# hasil undian bisa dihitung ulang dan dibuktikan tidak diatur.
+
+GIVEAWAY_TICKET_PER_MENFESS = 2
+GIVEAWAY_TICKET_PER_COMMENT = 1
+# Batas atas tiket. Tanpa ini, satu orang yang spam bisa menguasai undian.
+GIVEAWAY_MAX_TICKETS = 50
+GIVEAWAY_DEFAULT_CLAIM_HOURS = 24
+
+GIVEAWAY_PRESETS = {
+    "bebas": {
+        "min_menfess": 0, "min_comment": 0, "min_age_days": 0,
+        "require_discussion": 0,
+        "label": "Bebas — siapa pun yang subscribe boleh ikut",
+    },
+    "ringan": {
+        "min_menfess": 1, "min_comment": 3, "min_age_days": 1,
+        "require_discussion": 1,
+        "label": "Ringan — 1 menfess + 3 komentar, akun min 1 hari",
+    },
+    "ketat": {
+        "min_menfess": 3, "min_comment": 10, "min_age_days": 3,
+        "require_discussion": 1,
+        "label": "Ketat — 3 menfess + 10 komentar, akun min 3 hari",
+    },
+}
+
+
+def create_giveaway(name, prize, winner_count, duration_hours, mode,
+                    preset_key, created_by, claim_hours=None):
+    preset = GIVEAWAY_PRESETS[preset_key]
+    now = int(time.time())
+    conn = db()
+    cur = conn.execute("""
+        INSERT INTO giveaways(
+            name, prize, winner_count, mode, require_channel, require_discussion,
+            min_menfess, min_comment, min_age_days, claim_hours,
+            created_at, ends_at, status, created_by
+        ) VALUES (?,?,?,?,1,?,?,?,?,?,?,?,'open',?)
+    """, (
+        name[:120], prize[:200], int(winner_count), mode,
+        preset["require_discussion"], preset["min_menfess"],
+        preset["min_comment"], preset["min_age_days"],
+        int(claim_hours or GIVEAWAY_DEFAULT_CLAIM_HOURS),
+        now, now + int(duration_hours) * 3600, int(created_by),
+    ))
+    gid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return get_giveaway(gid)
+
+
+def get_giveaway(gid):
+    conn = db()
+    row = conn.execute("SELECT * FROM giveaways WHERE id=?", (int(gid),)).fetchone()
+    conn.close()
+    return row
+
+
+def get_open_giveaway():
+    """Hanya boleh ada satu giveaway berjalan, supaya tidak membingungkan peserta."""
+    conn = db()
+    row = conn.execute(
+        "SELECT * FROM giveaways WHERE status='open' ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def list_giveaways(limit=10):
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM giveaways ORDER BY created_at DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def set_giveaway_field(gid, **fields):
+    if not fields:
+        return
+    cols = ", ".join(f"{k}=?" for k in fields)
+    conn = db()
+    conn.execute(
+        f"UPDATE giveaways SET {cols} WHERE id=?",
+        (*fields.values(), int(gid)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def add_giveaway_entry(gid, user_id):
+    """True kalau entri baru, False kalau sudah pernah ikut."""
+    conn = db()
+    cur = conn.execute("""
+        INSERT OR IGNORE INTO giveaway_entries(giveaway_id, user_id, tickets, joined_at)
+        VALUES (?, ?, 1, ?)
+    """, (int(gid), int(user_id), int(time.time())))
+    conn.commit()
+    inserted = cur.rowcount > 0
+    conn.close()
+    return inserted
+
+
+def giveaway_entry_count(gid):
+    conn = db()
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM giveaway_entries WHERE giveaway_id=?", (int(gid),)
+    ).fetchone()["n"]
+    conn.close()
+    return int(n)
+
+
+def giveaway_entries(gid):
+    conn = db()
+    rows = conn.execute("""
+        SELECT e.*, u.username, u.first_name
+        FROM giveaway_entries e LEFT JOIN users u ON u.user_id=e.user_id
+        WHERE e.giveaway_id=? ORDER BY e.joined_at
+    """, (int(gid),)).fetchall()
+    conn.close()
+    return rows
+
+
+def has_joined_giveaway(gid, user_id):
+    conn = db()
+    row = conn.execute(
+        "SELECT 1 FROM giveaway_entries WHERE giveaway_id=? AND user_id=?",
+        (int(gid), int(user_id)),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def giveaway_winners(gid):
+    conn = db()
+    rows = conn.execute("""
+        SELECT w.*, u.username, u.first_name
+        FROM giveaway_winners w LEFT JOIN users u ON u.user_id=w.user_id
+        WHERE w.giveaway_id=? ORDER BY w.rank
+    """, (int(gid),)).fetchall()
+    conn.close()
+    return rows
+
+
+# ------------------------------------------------------------
+# KELAYAKAN
+# ------------------------------------------------------------
+
+def giveaway_activity(user_id, since=0):
+    conn = db()
+    row = conn.execute("""
+        SELECT
+            (SELECT COUNT(*) FROM menfess
+             WHERE sender_id=? AND created_at>=?) AS menfess,
+            (SELECT COUNT(*) FROM discussion_messages
+             WHERE author_user_id=? AND parent_message_id IS NOT NULL
+             AND created_at>=?) AS comment
+    """, (int(user_id), int(since), int(user_id), int(since))).fetchone()
+    conn.close()
+    return int(row["menfess"] or 0), int(row["comment"] or 0)
+
+
+def giveaway_tickets(user_id, gv):
+    """Tiket dihitung dari aktivitas SELAMA periode giveaway.
+
+    Sengaja dihitung saat pengundian, bukan saat mendaftar, supaya aktivitas
+    setelah ikut tetap dihargai. Semua peserta dapat minimal 1 tiket.
+    """
+    if gv["mode"] != "ticket":
+        return 1
+    menfess, comment = giveaway_activity(user_id, gv["created_at"])
+    tickets = (
+        1
+        + menfess * GIVEAWAY_TICKET_PER_MENFESS
+        + comment * GIVEAWAY_TICKET_PER_COMMENT
+    )
+    return max(1, min(GIVEAWAY_MAX_TICKETS, tickets))
+
+
+async def giveaway_eligibility(user_id, gv, context):
+    """(boleh_ikut, alasan). Alasan dipakai apa adanya untuk pesan ke user."""
+    if is_owner(user_id):
+        return False, "Owner tidak ikut undian sendiri."
+
+    if get_ban(user_id):
+        return False, "Akun kamu sedang dibatasi, jadi belum bisa ikut giveaway."
+
+    row = get_user_row(user_id)
+    if row is None:
+        return False, "Chat bot ini dulu (tekan START), lalu coba ikut lagi."
+
+    if gv["min_age_days"]:
+        umur_hari = (int(time.time()) - int(row["created_at"])) // 86400
+        if umur_hari < gv["min_age_days"]:
+            return False, (
+                f"Akun kamu baru {umur_hari} hari terdaftar di bot. "
+                f"Giveaway ini minimal {gv['min_age_days']} hari."
+            )
+
+    if gv["require_channel"] and not await is_subscribed(user_id, context):
+        return False, "Kamu harus subscribe channel RANDOM UNDERGROUND dulu."
+
+    if gv["require_discussion"] and not await is_discussion_member(user_id, context):
+        return False, "Kamu harus join grup diskusi RANDOM UNDERGROUND dulu."
+
+    if gv["min_menfess"] or gv["min_comment"]:
+        menfess, comment = giveaway_activity(user_id)
+        if menfess < gv["min_menfess"]:
+            return False, (
+                f"Baru {menfess} menfess. Giveaway ini minimal "
+                f"{gv['min_menfess']} menfess."
+            )
+        if comment < gv["min_comment"]:
+            return False, (
+                f"Baru {comment} komentar. Giveaway ini minimal "
+                f"{gv['min_comment']} komentar."
+            )
+
+    return True, "ok"
+
+
+# ------------------------------------------------------------
+# PENGUNDIAN
+# ------------------------------------------------------------
+
+def weighted_sample(rng, pool, k):
+    """Ambil k pemenang tanpa pengulangan, peluang sebanding bobot tiket."""
+    items = [[uid, max(0, int(w))] for uid, w in pool if int(w) > 0]
+    chosen = []
+    for _ in range(min(k, len(items))):
+        total = sum(w for _, w in items)
+        if total <= 0:
+            break
+        target = rng.random() * total
+        acc = 0.0
+        for idx, (uid, w) in enumerate(items):
+            acc += w
+            if target <= acc:
+                chosen.append(uid)
+                items.pop(idx)
+                break
+        else:
+            chosen.append(items.pop(-1)[0])
+    return chosen
+
+
+def giveaway_open_ranks(gid, winner_count):
+    """Peringkat 1..winner_count yang belum dipegang pemenang aktif.
+
+    Pemenang yang gugur (expired) membebaskan peringkatnya, jadi pengganti
+    mengisi nomor yang sama, bukan menambah nomor baru di belakang.
+    """
+    conn = db()
+    taken = {
+        int(r["rank"])
+        for r in conn.execute(
+            "SELECT rank FROM giveaway_winners "
+            "WHERE giveaway_id=? AND status IN ('pending','claimed')",
+            (int(gid),),
+        ).fetchall()
+    }
+    conn.close()
+    return [r for r in range(1, int(winner_count) + 1) if r not in taken]
+
+
+def draw_giveaway(gid, exclude=()):
+    """Undi pemenang dan bekukan tiket ke database agar bisa diaudit.
+
+    Hanya mengisi peringkat yang kosong, jadi fungsi ini dipakai baik untuk
+    pengundian pertama maupun untuk mengganti pemenang yang gugur.
+    Kembalikan (daftar_pemenang, seed).
+    """
+    gv = get_giveaway(gid)
+    if not gv:
+        return [], None
+
+    open_ranks = giveaway_open_ranks(gid, gv["winner_count"])
+    if not open_ranks:
+        return [], gv["draw_seed"]
+
+    exclude = {int(x) for x in exclude}
+    entries = [e for e in giveaway_entries(gid) if int(e["user_id"]) not in exclude]
+    if not entries:
+        return [], gv["draw_seed"]
+
+    conn = db()
+    pool = []
+    for e in entries:
+        tickets = giveaway_tickets(e["user_id"], gv)
+        conn.execute(
+            "UPDATE giveaway_entries SET tickets=? WHERE giveaway_id=? AND user_id=?",
+            (tickets, int(gid), int(e["user_id"])),
+        )
+        pool.append((int(e["user_id"]), tickets))
+    conn.commit()
+    conn.close()
+
+    seed = gv["draw_seed"] or secrets.token_hex(8)
+    # len(exclude) ikut ke dalam seed supaya undian ulang tidak menghasilkan
+    # urutan yang sama dengan undian sebelumnya.
+    rng = random.Random(f"{seed}:{gid}:{len(exclude)}")
+    winners = weighted_sample(rng, pool, len(open_ranks))
+
+    now = int(time.time())
+    conn = db()
+    for rank, uid in zip(open_ranks, winners):
+        conn.execute("""
+            INSERT OR IGNORE INTO giveaway_winners(
+                giveaway_id, user_id, rank, drawn_at, status
+            ) VALUES (?,?,?,?,'pending')
+        """, (int(gid), int(uid), int(rank), now))
+    conn.commit()
+    conn.close()
+
+    set_giveaway_field(gid, draw_seed=seed, drawn_at=now, status="drawn")
+    return winners, seed
+
+
+def claim_giveaway(gid, user_id):
+    now = int(time.time())
+    conn = db()
+    cur = conn.execute("""
+        UPDATE giveaway_winners SET status='claimed', claimed_at=?
+        WHERE giveaway_id=? AND user_id=? AND status='pending'
+    """, (now, int(gid), int(user_id)))
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
+def expire_unclaimed(gid):
+    """Tandai pemenang yang tidak klaim sebagai kedaluwarsa. Kembalikan id-nya."""
+    gv = get_giveaway(gid)
+    if not gv or not gv["drawn_at"]:
+        return []
+    deadline = int(gv["drawn_at"]) + int(gv["claim_hours"]) * 3600
+    if int(time.time()) < deadline:
+        return []
+    conn = db()
+    rows = conn.execute(
+        "SELECT user_id FROM giveaway_winners "
+        "WHERE giveaway_id=? AND status='pending'",
+        (int(gid),),
+    ).fetchall()
+    ids = [int(r["user_id"]) for r in rows]
+    if ids:
+        conn.execute(
+            "UPDATE giveaway_winners SET status='expired' "
+            "WHERE giveaway_id=? AND status='pending'",
+            (int(gid),),
+        )
+        conn.commit()
+    conn.close()
+    return ids
+
+
+# ------------------------------------------------------------
+# TAMPILAN & PENGUMUMAN
+# ------------------------------------------------------------
+
+def giveaway_countdown(gv):
+    sisa = int(gv["ends_at"]) - int(time.time())
+    if sisa <= 0:
+        return "sudah ditutup"
+    return f"sisa {fmt_duration(sisa)}"
+
+
+def giveaway_requirement_lines(gv):
+    lines = ["▪ Subscribe channel RANDOM UNDERGROUND"]
+    if gv["require_discussion"]:
+        lines.append("▪ Join grup diskusi")
+    if gv["min_menfess"]:
+        lines.append(f"▪ Minimal {gv['min_menfess']} menfess")
+    if gv["min_comment"]:
+        lines.append(f"▪ Minimal {gv['min_comment']} komentar")
+    if gv["min_age_days"]:
+        lines.append(f"▪ Akun minimal {gv['min_age_days']} hari terdaftar di bot")
+    return lines
+
+
+def giveaway_mode_text(gv):
+    if gv["mode"] == "ticket":
+        return (
+            "Mode: UNDIAN TIKET\n"
+            f"Tiap menfess = {GIVEAWAY_TICKET_PER_MENFESS} tiket, "
+            f"tiap komentar = {GIVEAWAY_TICKET_PER_COMMENT} tiket "
+            f"(maks {GIVEAWAY_MAX_TICKETS}).\n"
+            "Makin aktif selama giveaway, makin besar peluang menang."
+        )
+    return "Mode: UNDIAN ACAK\nSemua peserta punya peluang sama besar."
+
+
+def giveaway_post_text(gv, entry_count=None):
+    if entry_count is None:
+        entry_count = giveaway_entry_count(gv["id"])
+    lines = [
+        "🎁 GIVEAWAY",
+        "",
+        gv["name"],
+        "",
+        f"Hadiah   : {gv['prize']}",
+        f"Pemenang : {gv['winner_count']} orang",
+        f"Ditutup  : {fmt_ts(gv['ends_at'])} ({giveaway_countdown(gv)})",
+        f"Peserta  : {entry_count}",
+        "",
+        "SYARAT",
+        *giveaway_requirement_lines(gv),
+        "",
+        giveaway_mode_text(gv),
+        "",
+        "Tekan tombol di bawah untuk ikut. Kalau menang, nama kamu "
+        "diumumkan di channel ini.",
+    ]
+    return "\n".join(lines)
+
+
+def giveaway_join_menu(gv):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎁 IKUT GIVEAWAY", callback_data=f"gw:join:{gv['id']}")],
+        [InlineKeyboardButton("ℹ️ CEK SYARAT", callback_data=f"gw:info:{gv['id']}")],
+    ])
+
+
+def winner_mention(row):
+    uname = (row["username"] if row is not None else "") or ""
+    if uname:
+        return f"@{uname}"
+    name = (row["first_name"] if row is not None else "") or "Pemenang"
+    return f"{name} (id {row['user_id']})"
+
+
+async def post_giveaway(bot, gv):
+    sent = await bot.send_message(
+        CHANNEL_USERNAME,
+        giveaway_post_text(gv, 0),
+        reply_markup=giveaway_join_menu(gv),
+    )
+    set_giveaway_field(gv["id"], channel_message_id=sent.message_id, shown_count=0)
+    return sent
+
+
+async def refresh_giveaway_post(bot, gv):
+    """Perbarui jumlah peserta di postingan channel, hanya kalau berubah.
+
+    Mengedit tiap kali ada yang ikut bisa kena rate limit Telegram, jadi
+    pembaruan dijalankan oleh watcher dan dilewati kalau angkanya sama.
+    """
+    if not gv["channel_message_id"]:
+        return
+    count = giveaway_entry_count(gv["id"])
+    if count == int(gv["shown_count"]):
+        return
+    try:
+        await bot.edit_message_text(
+            chat_id=CHANNEL_CHAT_ID or CHANNEL_USERNAME,
+            message_id=int(gv["channel_message_id"]),
+            text=giveaway_post_text(gv, count),
+            reply_markup=giveaway_join_menu(gv),
+        )
+        set_giveaway_field(gv["id"], shown_count=count)
+    except BadRequest as exc:
+        # "message is not modified" tidak perlu dilaporkan.
+        if "not modified" in str(exc).lower():
+            set_giveaway_field(gv["id"], shown_count=count)
+        else:
+            logging.info("Gagal memperbarui postingan giveaway: %s", exc)
+    except Exception:
+        logging.exception("Gagal memperbarui postingan giveaway")
+
+
+async def close_giveaway_post(bot, gv, result_text):
+    """Ganti postingan giveaway dengan hasilnya dan cabut tombol ikut."""
+    if not gv["channel_message_id"]:
+        return
+    try:
+        await bot.edit_message_text(
+            chat_id=CHANNEL_CHAT_ID or CHANNEL_USERNAME,
+            message_id=int(gv["channel_message_id"]),
+            text=result_text,
+            reply_markup=None,
+        )
+    except Exception:
+        logging.info("Tidak bisa mengedit postingan giveaway, kirim terpisah")
+        try:
+            await bot.send_message(CHANNEL_USERNAME, result_text)
+        except Exception:
+            logging.exception("Gagal mengumumkan hasil giveaway")
+
+
+def giveaway_result_text(gv, winners_rows, seed, total_entries):
+    lines = [
+        "🎁 GIVEAWAY SELESAI",
+        "",
+        gv["name"],
+        f"Hadiah: {gv['prize']}",
+        "",
+    ]
+    if winners_rows:
+        lines.append(f"PEMENANG ({len(winners_rows)} dari {total_entries} peserta)")
+        for row in winners_rows:
+            tiket = ""
+            if gv["mode"] == "ticket":
+                conn = db()
+                t = conn.execute(
+                    "SELECT tickets FROM giveaway_entries "
+                    "WHERE giveaway_id=? AND user_id=?",
+                    (int(gv["id"]), int(row["user_id"])),
+                ).fetchone()
+                conn.close()
+                if t:
+                    tiket = f" · {t['tickets']} tiket"
+            lines.append(f"{row['rank']}. {winner_mention(row)}{tiket}")
+        lines.append("")
+        lines.append(
+            f"Pemenang punya waktu {gv['claim_hours']} jam untuk klaim lewat DM bot. "
+            "Kalau tidak diklaim, hadiah diundi ulang."
+        )
+    else:
+        lines.append("Tidak ada peserta yang memenuhi syarat. Undian dibatalkan.")
+
+    if seed:
+        lines += [
+            "",
+            f"Seed undian: {seed}",
+            "Seed + daftar peserta disimpan, jadi hasil undian bisa dihitung "
+            "ulang dan dibuktikan tidak diatur.",
+        ]
+    return "\n".join(lines)
+
+
+def giveaway_claim_menu(gid):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✓ KLAIM HADIAH", callback_data=f"gw:claim:{gid}")]
+    ])
+
+
+async def announce_giveaway_result(bot, gid):
+    gv = get_giveaway(gid)
+    if not gv:
+        return
+    rows = [w for w in giveaway_winners(gid) if w["status"] != "expired"]
+    total = giveaway_entry_count(gid)
+    text = giveaway_result_text(gv, rows, gv["draw_seed"], total)
+    await close_giveaway_post(bot, gv, text)
+
+    for row in rows:
+        if row["status"] != "pending":
+            continue
+        try:
+            await bot.send_message(
+                int(row["user_id"]),
+                f"🎁 KAMU MENANG GIVEAWAY!\n\n"
+                f"{gv['name']}\n"
+                f"Hadiah: {gv['prize']}\n"
+                f"Peringkat: {row['rank']}\n\n"
+                f"Klaim dalam {gv['claim_hours']} jam dengan tombol di bawah. "
+                "Lewat dari itu, hadiah diundi ulang ke peserta lain.",
+                reply_markup=giveaway_claim_menu(gid),
+            )
+        except Exception:
+            logging.info("Tidak bisa DM pemenang %s", row["user_id"])
+
+    await log_event(
+        bot, "🎁 GIVEAWAY DIUNDI",
+        gv["created_by"],
+        f"{gv['name']} · {len(rows)} pemenang dari {total} peserta · seed {gv['draw_seed']}",
+    )
+
+
+async def reroll_giveaway(bot, gid, reason="tidak diklaim"):
+    """Undi pengganti untuk pemenang yang gugur."""
+    gv = get_giveaway(gid)
+    if not gv:
+        return []
+    existing = [int(w["user_id"]) for w in giveaway_winners(gid)]
+    winners, _ = draw_giveaway(gid, exclude=existing)
+    if not winners:
+        try:
+            await bot.send_message(
+                CHANNEL_USERNAME,
+                f"🎁 {gv['name']}\n\n"
+                f"Hadiah tidak bisa diundi ulang: sudah tidak ada peserta lain "
+                f"yang memenuhi syarat.",
+            )
+        except Exception:
+            pass
+        return []
+
+    rows = [w for w in giveaway_winners(gid) if int(w["user_id"]) in winners]
+    names = ", ".join(winner_mention(r) for r in rows)
+    try:
+        await bot.send_message(
+            CHANNEL_USERNAME,
+            f"🎁 UNDIAN ULANG — {gv['name']}\n\n"
+            f"Pemenang sebelumnya gugur ({reason}).\n"
+            f"Pengganti: {names}",
+        )
+    except Exception:
+        pass
+
+    for row in rows:
+        try:
+            await bot.send_message(
+                int(row["user_id"]),
+                f"🎁 KAMU MENANG GIVEAWAY (undian ulang)!\n\n"
+                f"{gv['name']}\nHadiah: {gv['prize']}\n\n"
+                f"Klaim dalam {gv['claim_hours']} jam.",
+                reply_markup=giveaway_claim_menu(gid),
+            )
+        except Exception:
+            pass
+    return winners
 
 
 # ============================================================
@@ -4043,6 +4962,384 @@ async def handle_mod_callback(update, context, data):
 
 
 
+# ------------------------------------------------------------
+# TOMBOL PESERTA
+# ------------------------------------------------------------
+
+async def handle_giveaway_callback(update, context, data):
+    """Tombol giveaway. Diproses SEBELUM pengecekan ban global karena
+    tombol ini menempel di postingan channel: membalas dengan pesan biasa
+    akan bocor ke publik, jadi semua umpan balik dikirim sebagai toast."""
+    query = update.callback_query
+    user = query.from_user
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    try:
+        gid = int(parts[2])
+    except (IndexError, ValueError):
+        return
+
+    async def toast(text, alert=True):
+        try:
+            await query.answer(text[:200], show_alert=alert)
+        except Exception:
+            pass
+
+    gv = get_giveaway(gid)
+    if not gv:
+        await toast("Giveaway ini sudah tidak ada.")
+        return
+
+    if action == "info":
+        syarat = "\n".join(giveaway_requirement_lines(gv))
+        await toast(
+            f"{gv['name']}\n\nHadiah: {gv['prize']}\n"
+            f"Pemenang: {gv['winner_count']}\n"
+            f"{giveaway_countdown(gv).capitalize()}\n\nSYARAT\n{syarat}"
+        )
+        return
+
+    if action == "join":
+        if gv["status"] != "open":
+            await toast("Giveaway ini sudah ditutup.")
+            return
+        if int(time.time()) >= int(gv["ends_at"]):
+            await toast("Waktu pendaftaran sudah habis.")
+            return
+        if has_joined_giveaway(gid, user.id):
+            await toast(
+                f"Kamu sudah terdaftar.\n\nPeserta saat ini: "
+                f"{giveaway_entry_count(gid)} orang."
+            )
+            return
+
+        boleh, alasan = await giveaway_eligibility(user.id, gv, context)
+        if not boleh:
+            await toast(f"Belum bisa ikut.\n\n{alasan}")
+            return
+
+        save_user(user)
+        if not add_giveaway_entry(gid, user.id):
+            await toast("Kamu sudah terdaftar.")
+            return
+
+        total = giveaway_entry_count(gid)
+        extra = ""
+        if gv["mode"] == "ticket":
+            extra = (
+                f"\n\nTiket kamu sekarang: {giveaway_tickets(user.id, gv)}. "
+                "Makin aktif kirim menfess dan komentar, makin banyak tiketmu."
+            )
+        await toast(
+            f"Berhasil ikut giveaway!\n\n{gv['name']}\n"
+            f"Peserta: {total} orang{extra}\n\n"
+            "Kalau menang, nama kamu diumumkan di channel dan bot akan DM kamu."
+        )
+        try:
+            await context.bot.send_message(
+                user.id,
+                f"🎁 Kamu terdaftar di giveaway:\n\n{gv['name']}\n"
+                f"Hadiah: {gv['prize']}\n"
+                f"Pengundian: {fmt_ts(gv['ends_at'])}\n\n"
+                "Pemenang diumumkan di channel dan diberi tahu lewat DM ini.",
+            )
+        except Exception:
+            pass
+        return
+
+    if action == "claim":
+        rows = [w for w in giveaway_winners(gid) if int(w["user_id"]) == user.id]
+        if not rows:
+            await toast("Kamu bukan pemenang giveaway ini.")
+            return
+        row = rows[0]
+        if row["status"] == "claimed":
+            await toast("Hadiah ini sudah kamu klaim. Tunggu admin menghubungi kamu.")
+            return
+        if row["status"] == "expired":
+            await toast(
+                "Batas waktu klaim sudah lewat, hadiah sudah diundi ulang."
+            )
+            return
+        if not claim_giveaway(gid, user.id):
+            await toast("Klaim gagal. Coba lagi sebentar.")
+            return
+        await toast("Klaim berhasil! Admin akan menghubungi kamu.")
+        try:
+            await query.message.reply_text(
+                "✓ Hadiah sudah kamu klaim.\n\n"
+                "Admin RANDOM UNDERGROUND akan menghubungi kamu lewat DM ini "
+                "untuk pengiriman hadiah."
+            )
+        except Exception:
+            pass
+        await log_event(
+            context.bot, "🎁 HADIAH DIKLAIM", user.id,
+            f"{gv['name']} · peringkat {row['rank']}",
+        )
+        return
+
+
+# ------------------------------------------------------------
+# PERINTAH OWNER
+# ------------------------------------------------------------
+
+def giveaway_cancel_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✕ BATAL", callback_data="owner:gw_cancel_wizard")]
+    ])
+
+
+def giveaway_mode_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎲 UNDIAN ACAK", callback_data="owner:gw_mode:random")],
+        [InlineKeyboardButton("🎟 UNDIAN TIKET (makin aktif makin besar)",
+                              callback_data="owner:gw_mode:ticket")],
+        [InlineKeyboardButton("✕ BATAL", callback_data="owner:gw_cancel_wizard")],
+    ])
+
+
+def giveaway_preset_menu():
+    rows = [
+        [InlineKeyboardButton(GIVEAWAY_PRESETS[k]["label"],
+                              callback_data=f"owner:gw_preset:{k}")]
+        for k in ("bebas", "ringan", "ketat")
+    ]
+    rows.append([InlineKeyboardButton("✕ BATAL", callback_data="owner:gw_cancel_wizard")])
+    return InlineKeyboardMarkup(rows)
+
+
+def owner_giveaway_menu():
+    gv = get_open_giveaway()
+    if gv:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("◆ INFO GIVEAWAY", callback_data="owner:gw_info")],
+            [InlineKeyboardButton("◆ DAFTAR PESERTA", callback_data="owner:gw_entries")],
+            [InlineKeyboardButton("⚡ UNDI SEKARANG", callback_data="owner:gw_draw")],
+            [InlineKeyboardButton("✕ BATALKAN GIVEAWAY", callback_data="owner:gw_cancel")],
+            [InlineKeyboardButton("← OWNER PANEL", callback_data="owner_panel")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎁 BUAT GIVEAWAY", callback_data="owner:gw_create")],
+        [InlineKeyboardButton("◆ RIWAYAT GIVEAWAY", callback_data="owner:gw_history")],
+        [InlineKeyboardButton("← OWNER PANEL", callback_data="owner_panel")],
+    ])
+
+
+def giveaway_info_text(gv):
+    rows = giveaway_winners(gv["id"])
+    lines = [
+        f"GIVEAWAY #{gv['id']} — {gv['status'].upper()}",
+        "",
+        gv["name"],
+        f"Hadiah   : {gv['prize']}",
+        f"Pemenang : {gv['winner_count']} orang",
+        f"Peserta  : {giveaway_entry_count(gv['id'])}",
+        f"Ditutup  : {fmt_ts(gv['ends_at'])} ({giveaway_countdown(gv)})",
+        f"Klaim    : {gv['claim_hours']} jam setelah diundi",
+        "",
+        giveaway_mode_text(gv),
+        "",
+        "SYARAT",
+        *giveaway_requirement_lines(gv),
+    ]
+    if gv["draw_seed"]:
+        lines += ["", f"Seed undian: {gv['draw_seed']}"]
+    if rows:
+        lines += ["", "PEMENANG"]
+        for r in rows:
+            lines.append(f"{r['rank']}. {winner_mention(r)} — {r['status']}")
+    return "\n".join(lines)
+
+
+def giveaway_entries_text(gv, limit=40):
+    rows = giveaway_entries(gv["id"])
+    if not rows:
+        return f"Belum ada peserta di giveaway #{gv['id']}."
+    lines = [f"PESERTA GIVEAWAY #{gv['id']} ({len(rows)})", ""]
+    for r in rows[:limit]:
+        nama = (r["first_name"] or "Tanpa nama")
+        uname = f" @{r['username']}" if r["username"] else ""
+        tiket = f" · {giveaway_tickets(r['user_id'], gv)} tiket" if gv["mode"] == "ticket" else ""
+        lines.append(f"• {nama}{uname} ({r['user_id']}){tiket}")
+    if len(rows) > limit:
+        lines.append(f"... dan {len(rows) - limit} lainnya")
+    return "\n".join(lines)
+
+
+async def start_giveaway_wizard(update_or_query, context):
+    context.user_data["gw_step"] = "name"
+    for k in ("gw_name", "gw_prize", "gw_winners", "gw_hours", "gw_mode"):
+        context.user_data.pop(k, None)
+    text = (
+        "🎁 BUAT GIVEAWAY\n\n"
+        "Kirim nama giveaway-nya dulu.\n"
+        "Contoh: Giveaway Saldo 50K"
+    )
+    if hasattr(update_or_query, "message") and update_or_query.message is not None:
+        await update_or_query.message.reply_text(text, reply_markup=giveaway_cancel_menu())
+
+
+@owner_only
+async def giveaway_start_command(update, context):
+    if get_open_giveaway():
+        await update.effective_message.reply_text(
+            "✕ Masih ada giveaway berjalan.\n\n"
+            "Selesaikan atau batalkan dulu lewat /giveaway_status.",
+            reply_markup=owner_giveaway_menu(),
+        )
+        return
+    await start_giveaway_wizard(update, context)
+
+
+@owner_only
+async def giveaway_status_command(update, context):
+    gv = get_open_giveaway() or (list_giveaways(1) or [None])[0]
+    if not gv:
+        await update.effective_message.reply_text(
+            "Belum pernah ada giveaway.", reply_markup=owner_giveaway_menu()
+        )
+        return
+    await update.effective_message.reply_text(
+        giveaway_info_text(gv), reply_markup=owner_giveaway_menu()
+    )
+
+
+@owner_only
+async def giveaway_entries_command(update, context):
+    gv = get_open_giveaway() or (list_giveaways(1) or [None])[0]
+    if not gv:
+        await update.effective_message.reply_text("Belum ada giveaway.")
+        return
+    await update.effective_message.reply_text(giveaway_entries_text(gv))
+
+
+@owner_only
+async def giveaway_draw_command(update, context):
+    gv = get_open_giveaway()
+    if not gv:
+        await update.effective_message.reply_text("Tidak ada giveaway yang berjalan.")
+        return
+    await finish_giveaway(context.bot, gv["id"])
+    await update.effective_message.reply_text(
+        "✓ Giveaway diundi. Hasil sudah diumumkan di channel.",
+        reply_markup=owner_giveaway_menu(),
+    )
+
+
+@owner_only
+async def giveaway_cancel_command(update, context):
+    gv = get_open_giveaway()
+    if not gv:
+        await update.effective_message.reply_text(
+            "Tidak ada giveaway yang berjalan."
+        )
+        return
+    set_giveaway_field(gv["id"], status="cancelled")
+    await close_giveaway_post(
+        context.bot, gv,
+        f"🎁 {gv['name']}\n\nGiveaway ini dibatalkan oleh admin. "
+        "Tidak ada pemenang yang diundi.",
+    )
+    await update.effective_message.reply_text(
+        f"✓ Giveaway #{gv['id']} dibatalkan.",
+        reply_markup=owner_giveaway_menu(),
+    )
+
+
+@owner_only
+async def giveaway_reroll_command(update, context):
+    args = context.args or []
+    gid = None
+    if args and args[0].isdigit():
+        gid = int(args[0])
+    else:
+        rows = list_giveaways(1)
+        gid = rows[0]["id"] if rows else None
+    if gid is None:
+        await update.effective_message.reply_text("Belum ada giveaway.")
+        return
+    winners = await reroll_giveaway(context.bot, gid, reason="dibatalkan admin")
+    await update.effective_message.reply_text(
+        f"✓ Undian ulang selesai. Pemenang baru: {len(winners)}."
+        if winners else
+        "✕ Tidak ada peserta lain yang bisa diundi."
+    )
+
+
+@owner_only
+async def giveaway_help_command(update, context):
+    await update.effective_message.reply_text(
+        "🎁 PERINTAH GIVEAWAY\n\n"
+        "/giveaway_start — buat giveaway baru (wizard)\n"
+        "/giveaway_status — info giveaway terkini\n"
+        "/giveaway_entries — daftar peserta\n"
+        "/giveaway_draw — undi sekarang, tanpa menunggu deadline\n"
+        "/giveaway_reroll [id] — undi ulang pemenang yang gugur\n"
+        "/giveaway_cancel — batalkan giveaway berjalan\n\n"
+        "Peserta ikut lewat tombol di postingan channel.\n"
+        "Tersedia juga di OWNER CONTROL -> GIVEAWAY.",
+        reply_markup=owner_giveaway_menu(),
+    )
+
+
+async def giveaway_public_command(update, context):
+    """/giveaway untuk peserta: lihat giveaway aktif dan ikut dari DM."""
+    gv = get_open_giveaway()
+    message = update.effective_message
+    if not gv:
+        await message.reply_text(
+            "Belum ada giveaway yang berjalan.\n\n"
+            "Pantau channel RANDOM UNDERGROUND untuk giveaway berikutnya."
+        )
+        return
+    sudah = has_joined_giveaway(gv["id"], update.effective_user.id)
+    status = "✓ Kamu sudah terdaftar." if sudah else "Kamu belum terdaftar."
+    await message.reply_text(
+        giveaway_post_text(gv) + f"\n\n{status}",
+        reply_markup=giveaway_join_menu(gv),
+    )
+
+
+async def finish_giveaway(bot, gid):
+    """Tutup pendaftaran, undi, umumkan."""
+    gv = get_giveaway(gid)
+    if not gv or gv["status"] != "open":
+        return
+    winners, seed = draw_giveaway(gid)
+    if not winners:
+        set_giveaway_field(gid, status="drawn", drawn_at=int(time.time()))
+    await announce_giveaway_result(bot, gid)
+
+
+async def giveaway_watcher(application):
+    """Tutup giveaway saat waktunya, perbarui jumlah peserta, undi ulang
+    pemenang yang tidak klaim."""
+    while True:
+        try:
+            now = int(time.time())
+            gv = get_open_giveaway()
+            if gv:
+                if now >= int(gv["ends_at"]):
+                    await finish_giveaway(application.bot, gv["id"])
+                else:
+                    await refresh_giveaway_post(application.bot, gv)
+
+            for row in list_giveaways(5):
+                if row["status"] != "drawn":
+                    continue
+                gugur = expire_unclaimed(row["id"])
+                if gugur:
+                    logging.info(
+                        "GIVEAWAY %s: %s pemenang gugur karena tidak klaim",
+                        row["id"], len(gugur),
+                    )
+                    await reroll_giveaway(application.bot, row["id"])
+        except Exception:
+            logging.exception("Giveaway watcher error")
+        await asyncio.sleep(30)
+
+
 @owner_only
 async def event_start_command(update, context):
     # Backward-compatible command; the normal flow is now through buttons.
@@ -4183,6 +5480,7 @@ async def post_init(application):
     application.create_task(event_watcher(application))
     application.create_task(community_watcher(application))
     application.create_task(creative_files_janitor())
+    application.create_task(giveaway_watcher(application))
 
 
 async def error_handler(update, context):
@@ -4298,6 +5596,16 @@ def main():
 
     app.add_handler(CommandHandler("profile", profile_command))
 
+    # Giveaway
+    app.add_handler(CommandHandler("giveaway", giveaway_public_command))
+    app.add_handler(CommandHandler("giveaway_start", giveaway_start_command))
+    app.add_handler(CommandHandler("giveaway_status", giveaway_status_command))
+    app.add_handler(CommandHandler("giveaway_entries", giveaway_entries_command))
+    app.add_handler(CommandHandler("giveaway_draw", giveaway_draw_command))
+    app.add_handler(CommandHandler("giveaway_reroll", giveaway_reroll_command))
+    app.add_handler(CommandHandler("giveaway_cancel", giveaway_cancel_command))
+    app.add_handler(CommandHandler("giveaway_help", giveaway_help_command))
+
     # Moderasi. Didaftarkan sebelum MessageHandler grup supaya perintah
     # yang dikirim di grup diskusi / log group tidak ikut tertelan.
     app.add_handler(CommandHandler("whois", whois_command))
@@ -4354,6 +5662,7 @@ def main():
     print("✕ Moderasi kata terlarang aktif.")
     logging.info("LOG CHANNEL: %s (%s)", log_target(), log_target_source())
     print("🛡 Moderasi: /whois /ban /mute /shadowban /unban /banlist /modlog")
+    print("🎁 Giveaway: /giveaway_start /giveaway_status /giveaway_draw")
     print("Menunggu pesan...")
 
     app.run_polling()
