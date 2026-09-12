@@ -363,6 +363,24 @@ def init_db():
     """)
 
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_type TEXT NOT NULL,
+            target_id INTEGER NOT NULL,
+            reporter_id INTEGER NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            handled_at INTEGER,
+            handled_by INTEGER,
+            UNIQUE(target_type, target_id, reporter_id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reports_target "
+        "ON reports(target_type, target_id)"
+    )
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS bot_settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -525,6 +543,18 @@ def init_db():
         conn.execute(
             "INSERT OR REPLACE INTO leaderboard_meta(key,value) VALUES ('v16_legacy_event_score_synced','1')"
         )
+
+    # Klaim hadiah custom: owner menentukan pertanyaannya, pemenang menjawab
+    # lewat bot, jawabannya tersimpan. Ditambahkan setelah giveaway dirilis.
+    gw_cols = {r["name"] for r in conn.execute("PRAGMA table_info(giveaways)").fetchall()}
+    if "claim_prompt" not in gw_cols:
+        conn.execute("ALTER TABLE giveaways ADD COLUMN claim_prompt TEXT NOT NULL DEFAULT ''")
+
+    win_cols = {
+        r["name"] for r in conn.execute("PRAGMA table_info(giveaway_winners)").fetchall()
+    }
+    if "claim_data" not in win_cols:
+        conn.execute("ALTER TABLE giveaway_winners ADD COLUMN claim_data TEXT NOT NULL DEFAULT ''")
 
     conn.commit()
     conn.close()
@@ -2306,6 +2336,8 @@ def owner_panel_menu():
 def owner_mod_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚫 DAFTAR BAN", callback_data="owner:banlist")],
+        [InlineKeyboardButton("⚠️ LAPORAN MEMBER", callback_data="owner:reports")],
+        [InlineKeyboardButton("💾 BACKUP SEKARANG", callback_data="owner:backup")],
         [InlineKeyboardButton("🛡 RIWAYAT MODERASI", callback_data="owner:modlog")],
         [InlineKeyboardButton("🔎 CARA LACAK PENGIRIM", callback_data="owner:whoishelp")],
         [InlineKeyboardButton("✓ TEST LOG CHANNEL", callback_data="owner:logtest")],
@@ -2408,6 +2440,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_giveaway_callback(update, context, data)
         return
 
+    if data.startswith("rep:"):
+        await handle_report_callback(update, context, data)
+        return
+
     if await block_if_banned(update, context, user):
         return
 
@@ -2503,7 +2539,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "owner:gw_cancel_wizard":
         if not is_owner(user.id):
             return
-        for k in ("gw_step", "gw_name", "gw_prize", "gw_winners", "gw_hours", "gw_mode"):
+        for k in ("gw_step", "gw_name", "gw_prize", "gw_winners", "gw_hours",
+                  "gw_mode", "gw_preset"):
             context.user_data.pop(k, None)
         await query.message.reply_text(
             "✕ Pembuatan giveaway dibatalkan.",
@@ -2528,31 +2565,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         preset = data.rsplit(":", 1)[1]
         if preset not in GIVEAWAY_PRESETS:
             return
-        gv = create_giveaway(
-            name=context.user_data.pop("gw_name"),
-            prize=context.user_data.pop("gw_prize"),
-            winner_count=context.user_data.pop("gw_winners"),
-            duration_hours=context.user_data.pop("gw_hours"),
-            mode=context.user_data.pop("gw_mode", "random"),
-            preset_key=preset,
-            created_by=user.id,
-        )
-        context.user_data.pop("gw_step", None)
-        try:
-            await post_giveaway(context.bot, gv)
-        except Exception:
-            logging.exception("Gagal memposting giveaway ke channel")
-            set_giveaway_field(gv["id"], status="cancelled")
-            await query.message.reply_text(
-                "✕ Giveaway gagal diposting ke channel, jadi dibatalkan.\n\n"
-                "Pastikan bot masih admin di channel, lalu coba lagi.",
-                reply_markup=owner_giveaway_menu(),
-            )
-            return
+        context.user_data["gw_preset"] = preset
+        context.user_data["gw_step"] = "claim_prompt"
         await query.message.reply_text(
-            "✓ Giveaway dibuat dan sudah diposting ke channel.\n\n"
-            + giveaway_info_text(get_giveaway(gv["id"])),
-            reply_markup=owner_giveaway_menu(),
+            "PERTANYAAN KLAIM\n\n"
+            "Hadiahnya custom, jadi bot perlu tahu data apa yang harus "
+            "ditanyakan ke pemenang saat klaim.\n\n"
+            "Contoh:\n"
+            "• Kirim nomor DANA/OVO kamu\n"
+            "• Kirim username Steam kamu\n"
+            "• Kirim alamat lengkap + nomor HP\n\n"
+            "Jawabannya masuk ke log channel kamu, tidak pernah tampil di "
+            "channel publik.\n\n"
+            "Kirim pertanyaannya, atau kirim tanda minus ( - ) kalau tidak "
+            "perlu menanyakan apa pun.",
+            reply_markup=giveaway_cancel_menu(),
         )
         return
 
@@ -2685,6 +2712,41 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "forward-nya dengan /setlog\n"
             "• /setlog langsung di dalam grup tujuan\n\n"
             "Kembalikan ke DM owner: /unsetlog",
+            reply_markup=owner_mod_menu(),
+        )
+        return
+
+    if data == "owner:reports":
+        if not is_owner(user.id):
+            return
+        rows = open_reports()
+        if not rows:
+            await query.message.reply_text(
+                "✓ Tidak ada laporan yang belum ditangani.",
+                reply_markup=owner_mod_menu(),
+            )
+            return
+        lines = [f"⚠️ LAPORAN BELUM DITANGANI ({len(rows)})", ""]
+        for r in rows:
+            total, rincian = report_summary(r["target_type"], r["target_id"])
+            judul = (
+                f"#RU{r['target_id']}" if r["target_type"] == "menfess"
+                else f"komentar #{r['target_id']}"
+            )
+            lines.append(f"• {judul} — {total} laporan · {rincian}")
+        lines += ["", "Rincian lengkap: /reports"]
+        await query.message.reply_text(
+            "\n".join(lines), reply_markup=owner_mod_menu()
+        )
+        return
+
+    if data == "owner:backup":
+        if not is_owner(user.id):
+            return
+        await query.message.reply_text("💾 Membuat backup database...")
+        ok, info = await run_backup(context.bot, reason=f"manual oleh {user.id}")
+        await query.message.reply_text(
+            f"✓ Backup selesai: {info}" if ok else f"✕ Backup gagal: {info}",
             reply_markup=owner_mod_menu(),
         )
         return
@@ -2959,6 +3021,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["waiting_comment_reply"] = None
         return
 
+    # Jawaban klaim hadiah. Sengaja diproses sebelum gerbang subscribe:
+    # pemenang yang sudah sah harus tetap bisa menyelesaikan klaimnya.
+    if context.user_data.get("gw_claim_wait"):
+        gid = context.user_data.pop("gw_claim_wait")
+        await process_claim_answer(update, context, gid)
+        return
+
     # Owner giveaway creation wizard.
     if is_owner(user.id) and context.user_data.get("gw_step"):
         raw = (update.message.text or "").strip()
@@ -3030,6 +3099,43 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "Pilih cara mengundi:",
                 reply_markup=giveaway_mode_menu(),
+            )
+            return
+
+        if step == "claim_prompt":
+            prompt = "" if raw in ("-", "–", "") else raw
+            if len(prompt) > 400:
+                await update.message.reply_text(
+                    "✕ Pertanyaan klaim maksimal 400 karakter.",
+                    reply_markup=giveaway_cancel_menu(),
+                )
+                return
+            gv = create_giveaway(
+                name=context.user_data.pop("gw_name"),
+                prize=context.user_data.pop("gw_prize"),
+                winner_count=context.user_data.pop("gw_winners"),
+                duration_hours=context.user_data.pop("gw_hours"),
+                mode=context.user_data.pop("gw_mode", "random"),
+                preset_key=context.user_data.pop("gw_preset", "bebas"),
+                created_by=user.id,
+                claim_prompt=prompt,
+            )
+            context.user_data.pop("gw_step", None)
+            try:
+                await post_giveaway(context.bot, gv)
+            except Exception:
+                logging.exception("Gagal memposting giveaway ke channel")
+                set_giveaway_field(gv["id"], status="cancelled")
+                await update.message.reply_text(
+                    "✕ Giveaway gagal diposting ke channel, jadi dibatalkan.\n\n"
+                    "Pastikan bot masih admin di channel, lalu coba lagi.",
+                    reply_markup=owner_giveaway_menu(),
+                )
+                return
+            await update.message.reply_text(
+                "✓ Giveaway dibuat dan sudah diposting ke channel.\n\n"
+                + giveaway_info_text(get_giveaway(gv["id"])),
+                reply_markup=owner_giveaway_menu(),
             )
             return
 
@@ -3155,6 +3261,51 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⟡ Tekan KIRIM PESAN dulu.",
         reply_markup=main_menu(user.id),
     )
+
+
+async def process_claim_answer(update, context, gid):
+    """Terima data klaim dari pemenang, simpan, teruskan ke owner."""
+    user = update.effective_user
+    gv = get_giveaway(gid)
+    if not gv:
+        await update.message.reply_text("✕ Giveaway ini sudah tidak ada.")
+        return
+
+    row = get_winner_row(gid, user.id)
+    if not row:
+        await update.message.reply_text("✕ Kamu bukan pemenang giveaway ini.")
+        return
+    if row["status"] != "pending":
+        await update.message.reply_text(
+            "Klaim kamu sudah tercatat sebelumnya. Tunggu admin mengirim hadiahnya."
+        )
+        return
+
+    jawaban = (update.message.text or update.message.caption or "").strip()
+    if not jawaban:
+        context.user_data["gw_claim_wait"] = gid
+        await update.message.reply_text(
+            "✕ Kirim jawabannya dalam bentuk teks ya.\n\n"
+            f"{gv['claim_prompt']}"
+        )
+        return
+    if len(jawaban) > 1000:
+        context.user_data["gw_claim_wait"] = gid
+        await update.message.reply_text("✕ Terlalu panjang. Maksimal 1000 karakter.")
+        return
+
+    if not claim_giveaway(gid, user.id, jawaban):
+        await update.message.reply_text("✕ Klaim gagal. Coba tekan tombol klaim lagi.")
+        return
+
+    await update.message.reply_text(
+        "✓ Klaim kamu sudah masuk!\n\n"
+        f"Giveaway: {gv['name']}\n"
+        f"Hadiah: {gv['prize']}\n\n"
+        "Data yang kamu kirim sudah diteruskan ke admin. Kamu akan dikabari "
+        "lewat DM ini begitu hadiahnya dikirim."
+    )
+    await notify_claim(context.bot, gv, user.id, jawaban)
 
 
 async def process_private_comment_reply(update, context, db_id):
@@ -3332,6 +3483,21 @@ async def process_new_menfess(update, context):
             return
 
         menfess_id = create_menfess(user.id, sent.message_id, content)
+
+        # Tombol lapor baru bisa dipasang setelah postingan terkirim, karena
+        # callback-nya butuh menfess_id yang baru ada di sini. Kalau
+        # pemasangan gagal, postingannya tetap tayang tanpa tombol.
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=CHANNEL_CHAT_ID or CHANNEL_USERNAME,
+                message_id=sent.message_id,
+                reply_markup=report_menu(menfess_id),
+            )
+        except Exception:
+            logging.info(
+                "Tidak bisa memasang tombol lapor di menfess %s", menfess_id
+            )
+
         add_send_log(user.id)
         record_activity(user.id, "menfess")
         if event_activity_is_valid(message.text or message.caption or "", "menfess"):
@@ -3567,6 +3733,549 @@ def owner_only(func):
 
 
 # ============================================================
+# LAPORAN DARI MEMBER
+# ============================================================
+# Filter kata otomatis hanya mengenali daftar kata tetap dan buta konteks:
+# promosi, judi, link, doxxing, dan konten di luar konteks semuanya lolos.
+# Yang bisa mengenali itu manusia. Tombol lapor mengubah setiap member jadi
+# mata tambahan, dan laporannya masuk ke log channel lengkap dengan
+# identitas pengirim aslinya.
+
+REPORT_REASONS = {
+    "promosi": "Promosi / jualan",
+    "judi": "Judi / slot",
+    "nsfw": "Konten dewasa",
+    "toxic": "Menghina / rasis",
+    "doxing": "Membocorkan data pribadi",
+    "spam": "Spam / di luar konteks",
+    "lain": "Lainnya",
+}
+
+# Kirim entri log pada jumlah pelapor ini saja, supaya satu postingan yang
+# dilaporkan banyak orang tidak membanjiri log channel.
+REPORT_NOTIFY_AT = (1, 3, 5, 10, 20, 50)
+
+
+def add_report(target_type, target_id, reporter_id, reason=""):
+    """(baru, jumlah_pelapor). baru=False kalau orang ini sudah pernah lapor."""
+    conn = db()
+    cur = conn.execute("""
+        INSERT OR IGNORE INTO reports(
+            target_type, target_id, reporter_id, reason, created_at
+        ) VALUES (?,?,?,?,?)
+    """, (target_type, int(target_id), int(reporter_id), reason, int(time.time())))
+    conn.commit()
+    baru = cur.rowcount > 0
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM reports WHERE target_type=? AND target_id=?",
+        (target_type, int(target_id)),
+    ).fetchone()["n"]
+    conn.close()
+    return baru, int(total)
+
+
+def set_report_reason(target_type, target_id, reporter_id, reason):
+    conn = db()
+    cur = conn.execute("""
+        UPDATE reports SET reason=?
+        WHERE target_type=? AND target_id=? AND reporter_id=?
+    """, (reason, target_type, int(target_id), int(reporter_id)))
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
+def report_summary(target_type, target_id):
+    conn = db()
+    rows = conn.execute("""
+        SELECT reason, COUNT(*) AS n FROM reports
+        WHERE target_type=? AND target_id=? GROUP BY reason ORDER BY n DESC
+    """, (target_type, int(target_id))).fetchall()
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM reports WHERE target_type=? AND target_id=?",
+        (target_type, int(target_id)),
+    ).fetchone()["n"]
+    conn.close()
+    bagian = []
+    for r in rows:
+        label = REPORT_REASONS.get(r["reason"], r["reason"] or "tanpa alasan")
+        bagian.append(f"{label} x{r['n']}")
+    return int(total), ", ".join(bagian)
+
+
+def open_reports(limit=20):
+    conn = db()
+    rows = conn.execute("""
+        SELECT target_type, target_id,
+               COUNT(*) AS jumlah, MAX(created_at) AS terakhir
+        FROM reports WHERE handled_at IS NULL
+        GROUP BY target_type, target_id
+        ORDER BY jumlah DESC, terakhir DESC LIMIT ?
+    """, (int(limit),)).fetchall()
+    conn.close()
+    return rows
+
+
+def mark_reports_handled(target_type, target_id, actor_id):
+    conn = db()
+    cur = conn.execute("""
+        UPDATE reports SET handled_at=?, handled_by=?
+        WHERE target_type=? AND target_id=? AND handled_at IS NULL
+    """, (int(time.time()), int(actor_id), target_type, int(target_id)))
+    conn.commit()
+    n = cur.rowcount
+    conn.close()
+    return n
+
+
+def report_menu(menfess_id):
+    """Tombol yang menempel di setiap postingan menfess di channel."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚠️ LAPOR", callback_data=f"rep:lapor:{menfess_id}")]
+    ])
+
+
+def report_reason_menu(menfess_id):
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"rep:why:{menfess_id}:{key}")]
+        for key, label in REPORT_REASONS.items()
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def report_handled_menu(target_type, target_id, sender_id):
+    kode = "m" if target_type == "menfess" else "c"
+    rows = mod_action_menu(sender_id).inline_keyboard
+    return InlineKeyboardMarkup(list(rows) + [
+        [InlineKeyboardButton(
+            "✓ LAPORAN SELESAI", callback_data=f"rep:done:{kode}:{target_id}"
+        )]
+    ])
+
+
+async def log_report(bot, target_type, target_id, reporter_id, total):
+    """Kirim entri laporan ke log channel dengan identitas PENGIRIM aslinya."""
+    if target_type == "menfess":
+        menfess = get_menfess(target_id)
+        if not menfess:
+            return
+        sender_id = int(menfess["sender_id"])
+        isi = menfess["content"]
+        tautan = channel_post_url(menfess["channel_message_id"])
+        judul = f"#RU{target_id}"
+    else:
+        comment = get_discussion_message_by_db_id(target_id)
+        if not comment:
+            return
+        sender_id = int(comment["author_user_id"])
+        isi = comment["content"]
+        menfess = get_menfess(comment["menfess_id"])
+        tautan = (
+            channel_post_url(menfess["channel_message_id"]) if menfess else ""
+        )
+        judul = f"komentar di #RU{comment['menfess_id']}"
+
+    _, rincian = report_summary(target_type, target_id)
+    tanda = "🚨" if total >= 3 else "⚠️"
+    lines = [
+        f"<b>{tanda} LAPORAN MEMBER ({total}x)</b>  <code>{judul}</code>",
+        "",
+        "<b>Yang dilaporkan:</b>",
+        identity_block(sender_id),
+        "",
+        f"💬 {preview_for_log(isi)}",
+    ]
+    if rincian:
+        lines += ["", f"Alasan: {html.escape(rincian)}"]
+    lines += ["", f"Pelapor terakhir: {user_label(reporter_id)} (<code>{reporter_id}</code>)"]
+    if tautan:
+        lines += ["", f"🔗 <a href=\"{tautan}\">Lihat di channel</a>"]
+    if total >= 3:
+        lines += [
+            "",
+            "<b>Sudah dilaporkan 3 orang atau lebih.</b> Postingan TIDAK "
+            "dihapus otomatis, karena penghapusan otomatis bisa disalahgunakan "
+            "untuk menjatuhkan orang secara berkelompok. Putuskan sendiri.",
+        ]
+
+    await send_log(
+        bot, "\n".join(lines),
+        reply_markup=report_handled_menu(target_type, target_id, sender_id),
+    )
+
+
+async def handle_report_callback(update, context, data):
+    """Tombol lapor. Sama seperti giveaway, tombol ini menempel di postingan
+    channel, jadi semua umpan balik ke pelapor dikirim sebagai toast."""
+    query = update.callback_query
+    user = query.from_user
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    async def toast(text, alert=True):
+        try:
+            await query.answer(text[:200], show_alert=alert)
+        except Exception:
+            pass
+
+    if action == "lapor":
+        try:
+            menfess_id = int(parts[2])
+        except (IndexError, ValueError):
+            return
+        menfess = get_menfess(menfess_id)
+        if not menfess:
+            await toast("Postingan ini sudah tidak ada di database bot.")
+            return
+        if int(menfess["sender_id"]) == user.id:
+            await toast("Ini postingan kamu sendiri.")
+            return
+
+        save_user(user)
+        baru, total = add_report("menfess", menfess_id, user.id)
+        if not baru:
+            await toast("Kamu sudah melaporkan postingan ini. Admin sedang meninjau.")
+            return
+
+        await toast(
+            "Laporan terkirim. Makasih sudah bantu jaga base.\n\n"
+            "Admin akan meninjau. Identitas kamu sebagai pelapor tidak "
+            "ditampilkan ke publik.\n\n"
+            "Cek DM bot kalau mau menambahkan alasannya."
+        )
+        if total in REPORT_NOTIFY_AT:
+            await log_report(context.bot, "menfess", menfess_id, user.id, total)
+        else:
+            logging.info(
+                "LAPORAN menfess=%s total=%s (belum ambang notifikasi)",
+                menfess_id, total,
+            )
+
+        # Tawarkan pemilihan alasan di DM. Laporannya sudah tercatat, jadi
+        # kalau DM gagal (user belum /start) tidak ada yang hilang.
+        try:
+            await context.bot.send_message(
+                user.id,
+                "⚠️ Laporan kamu sudah masuk.\n\n"
+                "Kalau mau, pilih alasannya supaya admin lebih cepat menilai. "
+                "Boleh juga diabaikan.",
+                reply_markup=report_reason_menu(menfess_id),
+            )
+        except Exception:
+            pass
+        return
+
+    if action == "why":
+        try:
+            menfess_id = int(parts[2])
+            reason = parts[3]
+        except (IndexError, ValueError):
+            return
+        if reason not in REPORT_REASONS:
+            return
+        if not set_report_reason("menfess", menfess_id, user.id, reason):
+            await toast("Laporan kamu sudah tidak ada.")
+            return
+        await toast(f"Alasan dicatat: {REPORT_REASONS[reason]}. Makasih!")
+        total, _ = report_summary("menfess", menfess_id)
+        await log_report(context.bot, "menfess", menfess_id, user.id, total)
+        return
+
+    if action == "done":
+        if not is_owner(user.id):
+            await toast("Khusus owner.")
+            return
+        try:
+            kode = parts[2]
+            target_id = int(parts[3])
+        except (IndexError, ValueError):
+            return
+        target_type = "menfess" if kode == "m" else "comment"
+        n = mark_reports_handled(target_type, target_id, user.id)
+        await toast(f"{n} laporan ditandai selesai.")
+        try:
+            await query.message.reply_text(
+                f"✓ {n} laporan untuk {target_type} #{target_id} ditandai selesai."
+            )
+        except Exception:
+            pass
+        return
+
+
+@owner_only
+async def reports_command(update, context):
+    rows = open_reports()
+    if not rows:
+        await update.effective_message.reply_text(
+            "✓ Tidak ada laporan yang belum ditangani."
+        )
+        return
+    lines = [f"<b>⚠️ LAPORAN BELUM DITANGANI</b> ({len(rows)})", ""]
+    for r in rows:
+        total, rincian = report_summary(r["target_type"], r["target_id"])
+        if r["target_type"] == "menfess":
+            m = get_menfess(r["target_id"])
+            judul = f"#RU{r['target_id']}"
+            isi = preview_for_log(m["content"], 80) if m else "(sudah hilang)"
+            pengirim = f"<code>{m['sender_id']}</code>" if m else "-"
+        else:
+            c = get_discussion_message_by_db_id(r["target_id"])
+            judul = f"komentar #{r['target_id']}"
+            isi = preview_for_log(c["content"], 80) if c else "(sudah hilang)"
+            pengirim = f"<code>{c['author_user_id']}</code>" if c else "-"
+        lines.append(
+            f"• <b>{judul}</b> — {total} laporan\n"
+            f"  pengirim {pengirim} · {html.escape(rincian)}\n"
+            f"  {isi}"
+        )
+    lines += ["", "Tandai selesai lewat tombol di entri log, atau /whois untuk menindak."]
+    await reply_html(update, "\n".join(lines))
+
+
+@owner_only
+async def lapor_command(update, context):
+    """/lapor untuk owner: pakai di grup diskusi dengan reply ke komentar.
+
+    Tombol lapor hanya bisa menempel di postingan channel, jadi komentar
+    dilaporkan lewat perintah ini.
+    """
+    message = update.effective_message
+    reply = message.reply_to_message if message else None
+    if reply is None:
+        await message.reply_text(
+            "Pakai /lapor dengan cara reply ke komentar yang bermasalah "
+            "di grup diskusi."
+        )
+        return
+    record = find_discussion_message(reply.chat.id, reply.message_id)
+    if not record:
+        await message.reply_text(
+            "✕ Komentar itu tidak ada di database bot, jadi tidak bisa dilaporkan. "
+            "Pakai /whois untuk mencoba melacaknya."
+        )
+        return
+    alasan = " ".join(context.args or [])
+    _, total = add_report("comment", record["id"], update.effective_user.id, alasan)
+    await log_report(context.bot, "comment", record["id"], update.effective_user.id, total)
+    await message.reply_text(f"✓ Laporan dicatat. Total {total} laporan untuk komentar ini.")
+
+
+# ============================================================
+# BACKUP DATABASE OTOMATIS
+# ============================================================
+# Seluruh leaderboard, poin, riwayat ban, dan data giveaway ada di satu file
+# SQLite. Kalau file itu rusak atau terhapus, semuanya hilang permanen dan
+# tidak bisa dibangun ulang dari mana pun.
+#
+# Menyalin file DB dengan cp saat bot jalan TIDAK aman: mode WAL membuat
+# sebagian transaksi masih ada di file -wal, jadi salinannya bisa tidak
+# konsisten. Karena itu backup memakai API backup resmi SQLite, yang
+# menghasilkan snapshot utuh walau ada tulisan yang berjalan bersamaan.
+
+BACKUP_HOUR = int(os.getenv("RANDOMUNDERGROUND_BACKUP_HOUR", "3"))
+BACKUP_KEEP = int(os.getenv("RANDOMUNDERGROUND_BACKUP_KEEP", "7"))
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+# Bot API menolak dokumen di atas 50 MB.
+BACKUP_MAX_UPLOAD = 45 * 1024 * 1024
+
+
+def _backup_to_file(dest_path):
+    """Snapshot konsisten memakai API backup SQLite. Dijalankan di thread
+    terpisah supaya event loop tidak ikut berhenti."""
+    src = sqlite3.connect(DB_FILE, timeout=60)
+    try:
+        dst = sqlite3.connect(dest_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return os.path.getsize(dest_path)
+
+
+def _prune_old_backups(keep_path=None):
+    """Sisakan BACKUP_KEEP file terbaru.
+
+    Diurutkan berdasarkan waktu modifikasi, bukan nama, karena nama bisa
+    punya akhiran penomoran yang urutan alfabetisnya tidak sama dengan
+    urutan waktu. keep_path selalu dipertahankan.
+    """
+    try:
+        entries = []
+        for f in os.listdir(BACKUP_DIR):
+            if not f.endswith(".db"):
+                continue
+            full = os.path.join(BACKUP_DIR, f)
+            try:
+                entries.append((os.path.getmtime(full), f, full))
+            except OSError:
+                continue
+    except OSError:
+        return []
+
+    entries.sort(reverse=True)
+    dibuang = []
+    for _, name, full in entries[BACKUP_KEEP:]:
+        if keep_path and os.path.abspath(full) == os.path.abspath(keep_path):
+            continue
+        try:
+            os.remove(full)
+            dibuang.append(name)
+        except OSError:
+            continue
+    return dibuang
+
+
+async def run_backup(bot, reason="otomatis"):
+    """Buat backup, kirim ke log channel, rotasi yang lama.
+
+    Kembalikan (berhasil, keterangan).
+    """
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    # Detik ikut dipakai supaya dua backup berdekatan (misal jadwal harian
+    # lalu /backup manual) tidak saling menimpa. Kalau masih bertabrakan
+    # karena dijalankan di detik yang sama, tambahkan penomoran.
+    stamp = time.strftime("%Y-%m-%d_%H%M%S", time.localtime())
+    name = f"randomunderground-{stamp}.db"
+    path = os.path.join(BACKUP_DIR, name)
+    urutan = 2
+    while os.path.exists(path):
+        name = f"randomunderground-{stamp}-{urutan}.db"
+        path = os.path.join(BACKUP_DIR, name)
+        urutan += 1
+
+    try:
+        size = await asyncio.to_thread(_backup_to_file, path)
+    except Exception as exc:
+        logging.exception("Backup DB gagal")
+        await send_log(
+            bot,
+            "<b>⚠️ BACKUP GAGAL</b>\n\n"
+            f"{html.escape(str(exc))}\n\n"
+            "Database TIDAK ter-backup. Periksa ruang disk di VPS.",
+        )
+        return False, str(exc)
+
+    size_mb = size / 1024 / 1024
+    logging.info("BACKUP DB ok: %s (%.2f MB, %s)", name, size_mb, reason)
+
+    keterangan = (
+        f"<b>💾 BACKUP DATABASE</b>\n\n"
+        f"File   : <code>{html.escape(name)}</code>\n"
+        f"Ukuran : {size_mb:.2f} MB\n"
+        f"Sumber : {html.escape(reason)}\n"
+        f"Simpan : {BACKUP_KEEP} backup terakhir di VPS"
+    )
+    if size > BACKUP_MAX_UPLOAD:
+        keterangan += (
+            "\n\n⚠️ File terlalu besar untuk dikirim lewat Telegram "
+            f"({size_mb:.0f} MB > 45 MB). Salinan hanya ada di VPS, "
+            "jadi ambil manual dengan docker cp."
+        )
+        _prune_old_backups(keep_path=path)
+        await send_log(bot, keterangan)
+        return True, "tersimpan lokal, terlalu besar untuk dikirim"
+
+    # Unggah file supaya ada salinan DI LUAR VPS. Backup yang hanya ada di
+    # mesin yang sama tidak menolong kalau mesinnya yang hilang.
+    try:
+        with open(path, "rb") as fh:
+            await bot.send_document(
+                chat_id=log_target(),
+                document=fh,
+                filename=name,
+                caption=(
+                    f"💾 Backup database RANDOM UNDERGROUND\n"
+                    f"{stamp} · {size_mb:.2f} MB · {reason}\n\n"
+                    "Simpan file ini di luar VPS. Untuk memulihkan: hentikan "
+                    "bot, ganti data/randomunderground.db dengan file ini, "
+                    "hapus file -wal dan -shm, lalu jalankan bot lagi."
+                ),
+            )
+    except Exception as exc:
+        logging.exception("Backup dibuat tapi gagal dikirim")
+        _prune_old_backups(keep_path=path)
+        await send_log(
+            bot,
+            keterangan
+            + "\n\n⚠️ Backup BERHASIL dibuat tapi gagal dikirim ke sini: "
+            + html.escape(str(exc))
+            + "\nSalinan tetap ada di VPS.",
+        )
+        return True, f"tersimpan lokal, gagal kirim: {exc}"
+
+    # Rotasi dilakukan setelah pengiriman berhasil, supaya file yang baru
+    # dibuat tidak pernah terhapus sebelum sempat dikirim.
+    dibuang = _prune_old_backups(keep_path=path)
+    if dibuang:
+        logging.info("Backup lama dihapus: %s", ", ".join(dibuang))
+
+    return True, name
+
+
+async def backup_watcher(application):
+    """Backup harian pada jam BACKUP_HOUR. Ditandai per tanggal supaya
+    restart berkali-kali tidak memicu backup berulang."""
+    while True:
+        try:
+            local = time.localtime()
+            key = f"backup_done:{time.strftime('%Y-%m-%d', local)}"
+            if local.tm_hour == BACKUP_HOUR and not get_setting(key):
+                set_setting(key, "1")
+                await run_backup(application.bot, reason="jadwal harian")
+                # Bersihkan penanda tanggal lama agar bot_settings tidak tumbuh.
+                conn = db()
+                conn.execute(
+                    "DELETE FROM bot_settings WHERE key LIKE 'backup_done:%' AND key<?",
+                    (f"backup_done:{time.strftime('%Y-%m-%d', time.localtime(time.time() - 30 * 86400))}",),
+                )
+                conn.commit()
+                conn.close()
+        except Exception:
+            logging.exception("Backup watcher error")
+        await asyncio.sleep(300)
+
+
+@owner_only
+async def backup_command(update, context):
+    await update.effective_message.reply_text("💾 Membuat backup database...")
+    ok, info = await run_backup(context.bot, reason=f"manual oleh {update.effective_user.id}")
+    if ok:
+        await update.effective_message.reply_text(
+            f"✓ Backup selesai: {info}\n\nFile dikirim ke log channel."
+        )
+    else:
+        await update.effective_message.reply_text(f"✕ Backup gagal: {info}")
+
+
+@owner_only
+async def backup_list_command(update, context):
+    try:
+        files = sorted(
+            (f for f in os.listdir(BACKUP_DIR) if f.endswith(".db")), reverse=True
+        )
+    except OSError:
+        files = []
+    if not files:
+        await update.effective_message.reply_text(
+            "Belum ada backup.\n\nBackup otomatis jalan tiap hari "
+            f"jam {BACKUP_HOUR}:00. Paksa sekarang dengan /backup."
+        )
+        return
+    lines = [f"💾 BACKUP DI VPS ({len(files)}, disimpan {BACKUP_KEEP} terakhir)", ""]
+    for f in files:
+        try:
+            mb = os.path.getsize(os.path.join(BACKUP_DIR, f)) / 1024 / 1024
+            lines.append(f"• {f} — {mb:.2f} MB")
+        except OSError:
+            continue
+    lines += ["", f"Backup berikutnya: jam {BACKUP_HOUR}:00"]
+    await update.effective_message.reply_text("\n".join(lines))
+
+
+# ============================================================
 # GIVEAWAY
 # ============================================================
 # Berbeda dari Event (yang murni leaderboard poin), giveaway adalah undian
@@ -3602,7 +4311,7 @@ GIVEAWAY_PRESETS = {
 
 
 def create_giveaway(name, prize, winner_count, duration_hours, mode,
-                    preset_key, created_by, claim_hours=None):
+                    preset_key, created_by, claim_hours=None, claim_prompt=""):
     preset = GIVEAWAY_PRESETS[preset_key]
     now = int(time.time())
     conn = db()
@@ -3610,14 +4319,15 @@ def create_giveaway(name, prize, winner_count, duration_hours, mode,
         INSERT INTO giveaways(
             name, prize, winner_count, mode, require_channel, require_discussion,
             min_menfess, min_comment, min_age_days, claim_hours,
-            created_at, ends_at, status, created_by
-        ) VALUES (?,?,?,?,1,?,?,?,?,?,?,?,'open',?)
+            created_at, ends_at, status, created_by, claim_prompt
+        ) VALUES (?,?,?,?,1,?,?,?,?,?,?,?,'open',?,?)
     """, (
         name[:120], prize[:200], int(winner_count), mode,
         preset["require_discussion"], preset["min_menfess"],
         preset["min_comment"], preset["min_age_days"],
         int(claim_hours or GIVEAWAY_DEFAULT_CLAIM_HOURS),
         now, now + int(duration_hours) * 3600, int(created_by),
+        (claim_prompt or "")[:400],
     ))
     gid = cur.lastrowid
     conn.commit()
@@ -3831,7 +4541,7 @@ def giveaway_open_ranks(gid, winner_count):
         int(r["rank"])
         for r in conn.execute(
             "SELECT rank FROM giveaway_winners "
-            "WHERE giveaway_id=? AND status IN ('pending','claimed')",
+            "WHERE giveaway_id=? AND status IN ('pending','claimed','fulfilled')",
             (int(gid),),
         ).fetchall()
     }
@@ -3892,13 +4602,36 @@ def draw_giveaway(gid, exclude=()):
     return winners, seed
 
 
-def claim_giveaway(gid, user_id):
+def claim_giveaway(gid, user_id, claim_data=""):
     now = int(time.time())
     conn = db()
     cur = conn.execute("""
-        UPDATE giveaway_winners SET status='claimed', claimed_at=?
+        UPDATE giveaway_winners
+        SET status='claimed', claimed_at=?, claim_data=?
         WHERE giveaway_id=? AND user_id=? AND status='pending'
-    """, (now, int(gid), int(user_id)))
+    """, (now, (claim_data or "")[:1000], int(gid), int(user_id)))
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
+def get_winner_row(gid, user_id):
+    conn = db()
+    row = conn.execute(
+        "SELECT * FROM giveaway_winners WHERE giveaway_id=? AND user_id=?",
+        (int(gid), int(user_id)),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def mark_winner_fulfilled(gid, user_id):
+    conn = db()
+    cur = conn.execute("""
+        UPDATE giveaway_winners SET status='fulfilled'
+        WHERE giveaway_id=? AND user_id=? AND status='claimed'
+    """, (int(gid), int(user_id)))
     conn.commit()
     ok = cur.rowcount > 0
     conn.close()
@@ -4103,6 +4836,43 @@ def giveaway_result_text(gv, winners_rows, seed, total_entries):
             "ulang dan dibuktikan tidak diatur.",
         ]
     return "\n".join(lines)
+
+
+def claim_review_menu(gid, user_id):
+    rows = mod_action_menu(user_id).inline_keyboard
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(
+            "✓ HADIAH SUDAH DIKIRIM", callback_data=f"gw:done:{gid}:{user_id}"
+        )]] + list(rows)
+    )
+
+
+@never_fails
+async def notify_claim(bot, gv, user_id, claim_data):
+    """Kirim detail klaim ke log channel supaya owner bisa langsung kirim hadiah."""
+    row = get_winner_row(gv["id"], user_id)
+    lines = [
+        "<b>🎁 KLAIM HADIAH MASUK</b>",
+        "",
+        f"Giveaway : {html.escape(gv['name'])}",
+        f"Hadiah   : {html.escape(gv['prize'])}",
+        f"Peringkat: {row['rank'] if row else '-'}",
+        "",
+        identity_block(user_id),
+    ]
+    if claim_data:
+        lines += [
+            "",
+            "<b>Data yang dikirim pemenang:</b>",
+            f"<code>{html.escape(claim_data)}</code>",
+        ]
+        if gv["claim_prompt"]:
+            lines.append(f"<i>Pertanyaan: {html.escape(gv['claim_prompt'])}</i>")
+    else:
+        lines += ["", "<i>Giveaway ini tidak meminta data tambahan.</i>"]
+    await send_log(
+        bot, "\n".join(lines), reply_markup=claim_review_menu(gv["id"], user_id)
+    )
 
 
 def giveaway_claim_menu(gid):
@@ -5047,6 +5817,29 @@ async def handle_giveaway_callback(update, context, data):
             pass
         return
 
+    if action == "done":
+        if not is_owner(user.id):
+            await toast("Khusus owner.")
+            return
+        try:
+            target = int(parts[3])
+        except (IndexError, ValueError):
+            return
+        if mark_winner_fulfilled(gid, target):
+            await toast("Ditandai sudah dikirim.")
+            try:
+                await context.bot.send_message(
+                    target,
+                    f"🎁 Hadiah giveaway \"{gv['name']}\" sudah dikirim admin.\n\n"
+                    "Kalau belum kamu terima, balas pesan ini.",
+                )
+            except Exception:
+                pass
+            log_mod_action(user.id, target, "giveaway_fulfilled", gv["name"])
+        else:
+            await toast("Status tidak berubah (mungkin sudah ditandai).")
+        return
+
     if action == "claim":
         rows = [w for w in giveaway_winners(gid) if int(w["user_id"]) == user.id]
         if not rows:
@@ -5061,6 +5854,31 @@ async def handle_giveaway_callback(update, context, data):
                 "Batas waktu klaim sudah lewat, hadiah sudah diundi ulang."
             )
             return
+        prompt = (gv["claim_prompt"] or "").strip()
+
+        # Hadiah bisa apa saja, jadi bot tidak bisa menebak data apa yang
+        # dibutuhkan. Owner menuliskan pertanyaannya saat membuat giveaway,
+        # dan bot yang mengumpulkan jawabannya di sini.
+        if prompt:
+            context.user_data["gw_claim_wait"] = gid
+            await toast("Buka DM bot untuk menyelesaikan klaim.")
+            try:
+                await context.bot.send_message(
+                    user.id,
+                    f"🎁 KLAIM HADIAH — {gv['name']}\n"
+                    f"Hadiah: {gv['prize']}\n\n"
+                    f"{prompt}\n\n"
+                    "Balas pesan ini dengan jawabannya. Yang kamu kirim hanya "
+                    "dibaca admin, tidak ditampilkan di channel."
+                )
+            except Exception:
+                context.user_data.pop("gw_claim_wait", None)
+                await toast(
+                    "Bot tidak bisa DM kamu. Tekan START di bot ini dulu, "
+                    "lalu klaim lagi."
+                )
+            return
+
         if not claim_giveaway(gid, user.id):
             await toast("Klaim gagal. Coba lagi sebentar.")
             return
@@ -5073,10 +5891,7 @@ async def handle_giveaway_callback(update, context, data):
             )
         except Exception:
             pass
-        await log_event(
-            context.bot, "🎁 HADIAH DIKLAIM", user.id,
-            f"{gv['name']} · peringkat {row['rank']}",
-        )
+        await notify_claim(context.bot, gv, user.id, "")
         return
 
 
@@ -5143,12 +5958,18 @@ def giveaway_info_text(gv):
         "SYARAT",
         *giveaway_requirement_lines(gv),
     ]
+    if gv["claim_prompt"]:
+        lines += ["", f"Pertanyaan klaim: {gv['claim_prompt']}"]
+    else:
+        lines += ["", "Pertanyaan klaim: (tidak ada, klaim langsung selesai)"]
     if gv["draw_seed"]:
         lines += ["", f"Seed undian: {gv['draw_seed']}"]
     if rows:
         lines += ["", "PEMENANG"]
         for r in rows:
             lines.append(f"{r['rank']}. {winner_mention(r)} — {r['status']}")
+            if r["claim_data"]:
+                lines.append(f"    data klaim: {r['claim_data']}")
     return "\n".join(lines)
 
 
@@ -5481,6 +6302,7 @@ async def post_init(application):
     application.create_task(community_watcher(application))
     application.create_task(creative_files_janitor())
     application.create_task(giveaway_watcher(application))
+    application.create_task(backup_watcher(application))
 
 
 async def error_handler(update, context):
@@ -5596,6 +6418,12 @@ def main():
 
     app.add_handler(CommandHandler("profile", profile_command))
 
+    # Backup & laporan
+    app.add_handler(CommandHandler("backup", backup_command))
+    app.add_handler(CommandHandler("backups", backup_list_command))
+    app.add_handler(CommandHandler("reports", reports_command))
+    app.add_handler(CommandHandler("lapor", lapor_command))
+
     # Giveaway
     app.add_handler(CommandHandler("giveaway", giveaway_public_command))
     app.add_handler(CommandHandler("giveaway_start", giveaway_start_command))
@@ -5663,6 +6491,11 @@ def main():
     logging.info("LOG CHANNEL: %s (%s)", log_target(), log_target_source())
     print("🛡 Moderasi: /whois /ban /mute /shadowban /unban /banlist /modlog")
     print("🎁 Giveaway: /giveaway_start /giveaway_status /giveaway_draw")
+    print("⚠️ Laporan member: tombol LAPOR di tiap menfess, /reports /lapor")
+    logging.info(
+        "BACKUP OTOMATIS: tiap hari jam %s:00, simpan %s terakhir di %s",
+        BACKUP_HOUR, BACKUP_KEEP, BACKUP_DIR,
+    )
     print("Menunggu pesan...")
 
     app.run_polling()

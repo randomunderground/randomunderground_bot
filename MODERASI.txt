@@ -225,13 +225,58 @@ MASALAH YANG DISELESAIKAN
   disentuh sama sekali.
 
 ----------------------------------------------------------------
-7. YANG MASIH BELUM ADA
+7. LAPORAN DARI MEMBER
 ----------------------------------------------------------------
-  - Filter kata masih daftar statis 25 kata, buta konteks. Promosi,
-    judi, link, dan konten di luar konteks tetap lolos dan harus
-    ditangani manual dari log channel.
-  - Belum ada tombol "Lapor" untuk member.
+  Filter kata otomatis hanya mengenali 25 kata tetap dan buta
+  konteks: promosi, judi, link, doxxing, dan konten di luar konteks
+  semuanya lolos. Yang bisa mengenali itu manusia.
+
+  Setiap postingan menfess di channel punya tombol ⚠️ LAPOR.
+  Member menekannya -> laporan langsung masuk ke log channel kamu,
+  lengkap dengan identitas PENGIRIM aslinya dan tombol moderasi.
+
+  Setelah melapor, member dikirimi pilihan alasan di DM (promosi,
+  judi, konten dewasa, menghina, doxxing, spam, lainnya). Alasannya
+  opsional; laporannya sudah tercatat lebih dulu, jadi kalau member
+  belum pernah /start di bot pun laporannya tidak hilang.
+
+  ANTI-BANJIR
+    Satu orang hanya bisa melapor sekali per postingan. Entri log
+    dikirim pada pelapor ke-1, 3, 5, 10, 20, dan 50 saja, supaya
+    satu postingan yang dilaporkan ramai tidak membanjiri log.
+
+  TIDAK ADA PENGHAPUSAN OTOMATIS
+    Pada 3 pelapor atau lebih, entri log ditandai 🚨 tapi postingan
+    TIDAK dihapus sendiri. Penghapusan otomatis berbasis laporan
+    bisa disalahgunakan: sekelompok orang cukup melapor berjamaah
+    untuk menjatuhkan postingan yang sebenarnya tidak melanggar.
+    Keputusan tetap di kamu.
+
+  KOMENTAR
+    Tombol hanya bisa menempel di postingan channel, jadi komentar
+    dilaporkan dengan /lapor sambil reply komentarnya di grup diskusi.
+
+  PERINTAH
+    /reports  daftar laporan yang belum ditangani
+    /lapor    laporkan komentar (reply di grup diskusi)
+    Tandai selesai lewat tombol LAPORAN SELESAI di entri log.
+    Tombol: OWNER CONTROL -> MODERASI -> LAPORAN MEMBER
+
+----------------------------------------------------------------
+8. BACKUP DATABASE
+----------------------------------------------------------------
+  Otomatis tiap hari, file dikirim ke log channel. Lihat DEPLOY.txt
+  bagian 9 untuk env, rotasi, dan cara memulihkan.
+    /backup    backup sekarang
+    /backups   daftar backup di VPS
+
+----------------------------------------------------------------
+9. YANG MASIH BELUM ADA
+----------------------------------------------------------------
   - Belum ada mode approval (menfess masuk antrean sebelum tayang).
   - Belum ada role moderator; semua masih owner-only.
-  - Belum ada giveaway.
+  - Filter kata masih daftar statis; belum ada deteksi link,
+    nomor HP, atau normalisasi leetspeak.
+  - Belum ada statistik owner (DAU, user baru, jam ramai).
+  - Belum ada broadcast ke semua user.
 ================================================================

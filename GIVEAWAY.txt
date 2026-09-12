@@ -12,7 +12,7 @@ BEDA DENGAN EVENT
 ----------------------------------------------------------------
   /giveaway_start  (atau OWNER CONTROL -> 🎁 GIVEAWAY -> BUAT)
 
-  Wizard 6 langkah:
+  Wizard 7 langkah:
     1. Nama          -> "Giveaway Saldo 50K"
     2. Hadiah        -> "Saldo DANA 50K"
     3. Jumlah pemenang -> angka 1-50
@@ -24,6 +24,11 @@ BEDA DENGAN EVENT
          Bebas   subscribe channel saja
          Ringan  1 menfess + 3 komentar, akun min 1 hari, join grup
          Ketat   3 menfess + 10 komentar, akun min 3 hari, join grup
+    7. Pertanyaan klaim -> data apa yang ditanyakan ke pemenang.
+         Hadiah bisa apa saja, jadi bot tidak bisa menebak data yang
+         dibutuhkan. Contoh: "Kirim nomor DANA kamu", "Kirim username
+         Steam kamu", "Kirim alamat lengkap + nomor HP".
+         Kirim tanda minus ( - ) kalau tidak perlu menanyakan apa pun.
 
   Selesai wizard, bot otomatis posting ke channel dengan tombol
   IKUT GIVEAWAY dan countdown. Kalau posting gagal (bot bukan admin
@@ -85,6 +90,18 @@ BEDA DENGAN EVENT
     tombol IKUT dicabut.
   - Pemenang diumumkan di channel (@username) dan di-DM bot dengan
     tombol KLAIM HADIAH.
+  - KLAIM SELESAI DI DALAM BOT. Pemenang menekan KLAIM, bot
+    menanyakan pertanyaan klaim yang kamu tetapkan, pemenang menjawab
+    di DM bot, lalu jawabannya masuk ke log channel kamu bersama
+    identitas pemenang dan tombol HADIAH SUDAH DIKIRIM. Tidak perlu
+    DM satu-satu untuk menanyakan nomor atau alamat.
+    Jawaban pemenang hanya masuk ke log channel, tidak pernah tampil
+    di channel publik.
+  - Status pemenang: pending -> claimed (data masuk) -> fulfilled
+    (kamu tandai sudah kirim). Pemenang otomatis dikabari saat
+    ditandai fulfilled.
+  - Kalau pertanyaan klaim dikosongkan, menekan KLAIM langsung
+    menyelesaikan klaim tanpa tanya apa-apa.
   - Pemenang wajib klaim dalam 24 jam (bisa diatur per giveaway).
   - Lewat batas itu, pemenang ditandai gugur dan bot otomatis mengundi
     PENGGANTI untuk peringkat yang kosong. Peringkat dipakai ulang,
@@ -122,15 +139,16 @@ BEDA DENGAN EVENT
             require_discussion, min_menfess, min_comment,
             min_age_days, claim_hours, created_at, ends_at, status,
             channel_message_id, shown_count, draw_seed, drawn_at,
-            created_by)
+            created_by, claim_prompt)
       status: open | drawn | cancelled
 
   giveaway_entries(giveaway_id, user_id, tickets, joined_at)
       tickets dibekukan saat pengundian untuk keperluan audit.
 
   giveaway_winners(id, giveaway_id, user_id, rank, drawn_at,
-                   claimed_at, status)
-      status: pending | claimed | expired
+                   claimed_at, status, claim_data)
+      status: pending | claimed | fulfilled | expired
+      claim_data: jawaban pemenang atas pertanyaan klaim
 
   Dibuat otomatis oleh init_db(). Data lama tidak disentuh.
 

@@ -122,3 +122,30 @@ PRINSIP
   3. Ulangi langkah 5 (rebuild tidak wajib, cukup stop/rm/run)
   Token lama langsung mati begitu di-revoke.
 ================================================================
+
+----------------------------------------------------------------
+9. BACKUP OTOMATIS (menggantikan langkah 7 untuk pemakaian harian)
+----------------------------------------------------------------
+  Bot membuat backup sendiri tiap hari dan mengirim filenya ke log
+  channel, jadi ada salinan DI LUAR VPS. Langkah 7 di atas tetap
+  berlaku untuk backup manual dari host.
+
+  ENV
+    RANDOMUNDERGROUND_BACKUP_HOUR   jam backup harian (default 3)
+    RANDOMUNDERGROUND_BACKUP_KEEP   jumlah file disimpan (default 7)
+
+  Perintah di bot:
+    /backup    buat backup sekarang, kirim ke log channel
+    /backups   daftar backup yang ada di VPS
+  Tombol: OWNER CONTROL -> MODERASI -> BACKUP SEKARANG
+
+  Backup memakai API backup SQLite, bukan copy file, karena mode WAL
+  membuat "cp" bisa menghasilkan salinan yang tidak konsisten.
+  Hasilnya disimpan di data/backups/ dan otomatis dirotasi.
+
+  CARA MEMULIHKAN
+    1. docker stop my-randomunderground-bot
+    2. simpan file backup sebagai data/randomunderground.db
+    3. hapus data/randomunderground.db-wal dan -shm kalau ada
+    4. chown 10001:10001 data/randomunderground.db
+    5. jalankan lagi (langkah 4)
