@@ -143,6 +143,15 @@ PRINSIP
   membuat "cp" bisa menghasilkan salinan yang tidak konsisten.
   Hasilnya disimpan di data/backups/ dan otomatis dirotasi.
 
+  CATATAN KEPEMILIKAN FILE
+    Container jalan sebagai uid 10001. Kalau kamu pernah menjalankan
+    backup dari HOST sebagai root, file di data/backups/ jadi milik
+    root dan container tidak bisa merotasinya lagi. Perbaiki dengan:
+
+        chown -R 10001:10001 data/backups
+
+    Backup yang dibuat oleh bot sendiri tidak punya masalah ini.
+
   CARA MEMULIHKAN
     1. docker stop my-randomunderground-bot
     2. simpan file backup sebagai data/randomunderground.db
