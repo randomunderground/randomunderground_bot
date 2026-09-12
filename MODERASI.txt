@@ -231,30 +231,43 @@ MASALAH YANG DISELESAIKAN
   konteks: promosi, judi, link, doxxing, dan konten di luar konteks
   semuanya lolos. Yang bisa mengenali itu manusia.
 
-  Setiap postingan menfess di channel punya tombol ⚠️ LAPOR, berdampingan
-  dengan tombol 💬 KOMENTAR.
-
-  KENAPA TOMBOL KOMENTAR HARUS DIBUAT SENDIRI
+  POSTINGAN CHANNEL SENGAJA TIDAK DIBERI TOMBOL APA PUN
     Memasang inline keyboard pada postingan channel MENIMPA tombol
     Comment bawaan Telegram, dan Bot API tidak punya cara
-    mempertahankan keduanya. Jadi menambahkan tombol lapor tanpa
-    menyediakan tombol komentar sendiri berarti menghapus satu-satunya
-    jalan orang berkomentar, sekaligus mematikan sumber poin
-    leaderboard.
+    mempertahankan keduanya.
 
-    Karena itu keyboard TIDAK dipasang saat postingan dikirim, tapi
-    setelah auto-forward ke grup diskusi tiba, karena saat itulah id
-    thread diketahui dan tautan komentar bisa dibangun. Kalau thread
-    tidak pernah ada (grup diskusi terputus, atau bot bukan admin di
-    sana), keyboard tidak dipasang sama sekali sehingga tombol Comment
-    bawaan tetap tampil. Komentar lebih penting daripada tombol lapor.
+    Percobaan pertama: tombol LAPOR di setiap postingan. Akibatnya
+    postingan tidak bisa dikomentari sama sekali, yang berarti mesin
+    engagement base ini mati sekaligus sumber poin leaderboard dan
+    syarat kelayakan giveaway.
 
-    Angka di tombol komentar ikut naik setiap ada komentar baru, dengan
-    jeda minimal 20 detik antar pembaruan supaya postingan yang ramai
-    tidak kena rate limit Telegram.
+    Percobaan kedua: tombol komentar tiruan berupa tautan
+    "t.me/<channel>/<post>?comment=<id>". Juga gagal. Dokumentasi
+    Telegram menyatakan parameter `comment` harus berisi id pesan
+    KOMENTAR di grup diskusi, sedangkan yang tersedia saat postingan
+    dibuat hanyalah id pesan auto-forward, yaitu kepala thread.
+    Tautannya membuka tampilan pesan tunggal yang tidak bisa dibalas:
+    tombolnya ada, tapi orang tetap tidak bisa berkomentar.
 
-  Member menekannya -> laporan langsung masuk ke log channel kamu,
-  lengkap dengan identitas PENGIRIM aslinya dan tombol moderasi.
+    Kesimpulan: tombol bawaan Telegram lebih baik daripada tiruan apa
+    pun karena ada jumlah komentar dan komposernya benar. Postingan
+    dibiarkan bersih, dan pelaporan dipindah ke dua jalur di bawah.
+
+  DUA JALUR PELAPORAN
+    1. /lapor di grup diskusi, sambil reply pesan yang bermasalah.
+       Terbuka untuk SEMUA member, bukan cuma owner. Bisa melaporkan
+       komentar, atau melaporkan postingannya dengan reply ke pesan
+       auto-forward di grup.
+    2. Forward postingannya ke DM bot. Bot membalas dengan tombol
+       LAPOR. Jalur ini juga yang dipakai owner untuk /whois, jadi
+       kebiasaannya sama.
+
+    Keduanya menolak laporan atas pesan sendiri, menolak laporan ganda
+    dari orang yang sama, dan mengirim entri ke log channel lengkap
+    dengan identitas pengirim aslinya.
+
+    Cara melapor ditulis di rules, dan /lapor tanpa reply menampilkan
+    panduannya.
 
   Setelah melapor, member dikirimi pilihan alasan di DM (promosi,
   judi, konten dewasa, menghina, doxxing, spam, lainnya). Alasannya
