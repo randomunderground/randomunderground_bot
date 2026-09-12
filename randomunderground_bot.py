@@ -1512,26 +1512,51 @@ QOTD = [
     "Sertifikasi atau pengalaman langsung, mana yang lebih kepakai di lapangan?",
 ]
 
-# Pemancing saat base sepi. Semua berupa dua pilihan yang memaksa orang
-# berpihak dan menjelaskan alasannya. Isinya debat yang memang hidup di
-# komunitas keamanan, bukan pertanyaan receh.
-QUIET_PROMPTS = [
-    "Windows atau Linux buat kerjaan sehari-hari? Alasannya apa.",
-    "Nemu celah di web orang: laporin ke pemiliknya, publish, atau diem aja?",
-    "Mending semua enkripsi dilemahkan demi penegak hukum, atau nggak ada backdoor sama sekali walau kejahatan jadi susah diungkap?",
-    "Password manager cloud atau offline? Kenapa.",
-    "Mending jadi red team atau blue team?",
-    "VPN berbayar atau self-host?",
-    "Mending semua software jadi open source, atau semua perusahaan wajib bayar bug bounty yang layak?",
-    "2FA SMS yang praktis tapi rawan SIM swap, atau hardware key yang aman tapi bisa hilang?",
-    "Mending data kamu bocor dari satu perusahaan besar, atau tersebar di seratus aplikasi kecil?",
-    "Full disk encryption: worth the hassle, atau lebay buat laptop harian?",
-    "Kali Linux buat dipakai harian: masuk akal, atau salah alat?",
-    "Mending semua orang wajib pakai nama asli di internet, atau semua orang wajib anonim?",
-    "Bug bounty lepas atau kerja in-house? Mana yang lebih worth it.",
-    "Mending lengserkan CEO Google, atau naikkan domain kita ke halaman satu?",
-    "Antivirus di Linux: perlu, atau cuma nambah attack surface?",
-    "Mending sistem yang aman tapi ribet dipakai, atau gampang dipakai tapi ada lubang kecil?",
+# Pemancing saat base sepi, dikirim sebagai POLL native Telegram.
+# Semua isinya pertanyaan pilih-satu, jadi poll jauh lebih cocok daripada
+# pesan teks: orang tinggal tap, tidak harus mengarang jawaban. Hasilnya juga
+# langsung kelihatan sebagai angka, dan diskusi "kenapa" tetap jalan di
+# kolom komentar postingan poll itu.
+#
+# Batas Bot API: pertanyaan maksimal 300 karakter, tiap opsi maksimal 100,
+# dan jumlah opsi 2 sampai 10. Poll di channel wajib anonim.
+QUIET_POLLS = [
+    ("Buat kerjaan sehari-hari, kamu pilih mana?",
+     ["Linux", "Windows", "macOS"]),
+    ("Nemu celah di web orang lain, kamu ngapain?",
+     ["Laporin ke pemiliknya", "Publish ke publik", "Diem aja"]),
+    ("Enkripsi harus punya backdoor buat penegak hukum?",
+     ["Harus, demi penegakan hukum", "Jangan pernah, sekali dibuka rusak semua"]),
+    ("Password manager kamu yang mana?",
+     ["Cloud (Bitwarden, 1Password)", "Offline (KeePass)", "Nggak pakai"]),
+    ("Kalau harus pilih satu, kamu di tim mana?",
+     ["Red team", "Blue team", "Purple team"]),
+    ("2FA yang paling kamu percaya?",
+     ["Hardware key", "Authenticator app", "SMS"]),
+    ("Data kamu bocor, mending dari mana?",
+     ["Satu perusahaan besar", "Seratus aplikasi kecil"]),
+    ("Full disk encryption di laptop harian?",
+     ["Wajib", "Lebay, nggak perlu"]),
+    ("Kali Linux buat dipakai harian?",
+     ["Masuk akal", "Salah alat"]),
+    ("Antivirus di Linux?",
+     ["Perlu", "Cuma nambah attack surface"]),
+    ("Di internet, semua orang mending?",
+     ["Wajib pakai nama asli", "Wajib anonim"]),
+    ("Mana yang lebih worth it?",
+     ["Bug bounty lepas", "Kerja in-house"]),
+    ("Keamanan lebih sering gagal karena?",
+     ["Tekniknya", "Orangnya"]),
+    ("Mending sistem yang gimana?",
+     ["Aman tapi ribet dipakai", "Gampang dipakai tapi ada lubang kecil"]),
+    ("VPN kamu?",
+     ["Berbayar", "Self-host", "Nggak pakai"]),
+    ("Kalau bisa pilih satu, kamu pilih?",
+     ["Lengserkan CEO Google", "Naikkan domain kita ke halaman satu"]),
+    ("Buat kerja harian, kamu lebih sering pakai?",
+     ["Terminal", "GUI"]),
+    ("Menurut kamu, sertifikasi itu?",
+     ["Penting buat dapat kerja", "Kalah sama pengalaman langsung"]),
 ]
 
 MISSION_POOL = [
@@ -7207,6 +7232,41 @@ async def event_help_command(update, context):
     )
 
 
+async def send_quiet_poll(bot, pertanyaan, opsi):
+    """Kirim poll pemancing ke channel. True kalau berhasil.
+
+    Kalau poll ditolak (misal bot kehilangan izin posting atau pertanyaannya
+    melewati batas), pemancingnya tetap dikirim sebagai teks biasa supaya
+    base tidak jadi diam sama sekali. Poll di channel wajib anonim.
+    """
+    try:
+        await bot.send_poll(
+            chat_id=CHANNEL_USERNAME,
+            question=pertanyaan[:300],
+            options=[o[:100] for o in opsi],
+            is_anonymous=True,
+            allows_multiple_answers=False,
+        )
+        return True
+    except Exception:
+        logging.exception("Gagal mengirim poll, jatuh ke pesan teks")
+
+    try:
+        pilihan = "\n".join(f"▪ {o}" for o in opsi)
+        await bot.send_message(
+            CHANNEL_USERNAME,
+            "BASE SEPI\n\n"
+            + pertanyaan
+            + "\n\n"
+            + pilihan
+            + "\n\n▸ Bahas di komentar.",
+        )
+        return True
+    except Exception:
+        logging.exception("Pemancing base sepi gagal dikirim sama sekali")
+        return False
+
+
 async def community_watcher(application):
     """QOTD harian dan pemancing saat base sepi.
 
@@ -7255,18 +7315,20 @@ async def community_watcher(application):
 
             if now - last >= 7200 and now - last_prompt >= 21600:
                 # Dirotasi supaya tidak mengirim pertanyaan yang sama terus.
-                prompt = QUIET_PROMPTS[(now // 21600) % len(QUIET_PROMPTS)]
-                await application.bot.send_message(
-                    CHANNEL_USERNAME,
-                    "BASE SEPI\n\n" + prompt + "\n\n▸ Bahas di komentar.",
+                pertanyaan, opsi = QUIET_POLLS[
+                    (now // 21600) % len(QUIET_POLLS)
+                ]
+                terkirim = await send_quiet_poll(
+                    application.bot, pertanyaan, opsi
                 )
-                conn = db()
-                conn.execute(
-                    "INSERT OR REPLACE INTO community_meta VALUES ('quiet:last',?)",
-                    (str(now),),
-                )
-                conn.commit()
-                conn.close()
+                if terkirim:
+                    conn = db()
+                    conn.execute(
+                        "INSERT OR REPLACE INTO community_meta VALUES ('quiet:last',?)",
+                        (str(now),),
+                    )
+                    conn.commit()
+                    conn.close()
         except Exception:
             logging.exception("Community watcher error")
         await asyncio.sleep(30)
