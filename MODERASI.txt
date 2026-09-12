@@ -231,7 +231,28 @@ MASALAH YANG DISELESAIKAN
   konteks: promosi, judi, link, doxxing, dan konten di luar konteks
   semuanya lolos. Yang bisa mengenali itu manusia.
 
-  Setiap postingan menfess di channel punya tombol ⚠️ LAPOR.
+  Setiap postingan menfess di channel punya tombol ⚠️ LAPOR, berdampingan
+  dengan tombol 💬 KOMENTAR.
+
+  KENAPA TOMBOL KOMENTAR HARUS DIBUAT SENDIRI
+    Memasang inline keyboard pada postingan channel MENIMPA tombol
+    Comment bawaan Telegram, dan Bot API tidak punya cara
+    mempertahankan keduanya. Jadi menambahkan tombol lapor tanpa
+    menyediakan tombol komentar sendiri berarti menghapus satu-satunya
+    jalan orang berkomentar, sekaligus mematikan sumber poin
+    leaderboard.
+
+    Karena itu keyboard TIDAK dipasang saat postingan dikirim, tapi
+    setelah auto-forward ke grup diskusi tiba, karena saat itulah id
+    thread diketahui dan tautan komentar bisa dibangun. Kalau thread
+    tidak pernah ada (grup diskusi terputus, atau bot bukan admin di
+    sana), keyboard tidak dipasang sama sekali sehingga tombol Comment
+    bawaan tetap tampil. Komentar lebih penting daripada tombol lapor.
+
+    Angka di tombol komentar ikut naik setiap ada komentar baru, dengan
+    jeda minimal 20 detik antar pembaruan supaya postingan yang ramai
+    tidak kena rate limit Telegram.
+
   Member menekannya -> laporan langsung masuk ke log channel kamu,
   lengkap dengan identitas PENGIRIM aslinya dan tombol moderasi.
 

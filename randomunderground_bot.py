@@ -1100,6 +1100,8 @@ STRINGS = {
         "en": "Reason recorded: {reason}. Thanks!",
     },
     "btn_report": {"id": "⚠️ LAPOR", "en": "⚠️ REPORT"},
+    "btn_comment": {"id": "💬 KOMENTAR", "en": "💬 COMMENTS"},
+    "btn_comment_n": {"id": "💬 KOMENTAR ({n})", "en": "💬 COMMENTS ({n})"},
 
     # ---------- giveaway (sisi peserta) ----------
     "gw_joined": {
@@ -1476,6 +1478,32 @@ def find_discussion_message(chat_id, message_id):
     """, (chat_id, message_id)).fetchone()
     conn.close()
     return row
+
+
+def get_discussion_root(menfess_id):
+    """Baris pesan hasil auto-forward channel ke grup diskusi.
+
+    Pesan itulah kepala thread komentar, jadi id-nya yang dipakai untuk
+    membangun tautan "buka komentar" di postingan channel.
+    """
+    conn = db()
+    row = conn.execute("""
+        SELECT * FROM discussion_messages
+        WHERE menfess_id=? AND parent_message_id IS NULL
+        ORDER BY created_at LIMIT 1
+    """, (int(menfess_id),)).fetchone()
+    conn.close()
+    return row
+
+
+def count_menfess_comments(menfess_id):
+    conn = db()
+    n = conn.execute("""
+        SELECT COUNT(*) AS n FROM discussion_messages
+        WHERE menfess_id=? AND parent_message_id IS NOT NULL
+    """, (int(menfess_id),)).fetchone()["n"]
+    conn.close()
+    return int(n)
 
 
 def get_discussion_message_by_db_id(db_id):
@@ -4679,19 +4707,12 @@ async def process_new_menfess(update, context):
 
         menfess_id = create_menfess(user.id, sent.message_id, content)
 
-        # Tombol lapor baru bisa dipasang setelah postingan terkirim, karena
-        # callback-nya butuh menfess_id yang baru ada di sini. Kalau
-        # pemasangan gagal, postingannya tetap tayang tanpa tombol.
-        try:
-            await context.bot.edit_message_reply_markup(
-                chat_id=CHANNEL_CHAT_ID or CHANNEL_USERNAME,
-                message_id=sent.message_id,
-                reply_markup=report_menu(menfess_id),
-            )
-        except Exception:
-            logging.info(
-                "Tidak bisa memasang tombol lapor di menfess %s", menfess_id
-            )
+        # Tombol TIDAK dipasang di sini. Inline keyboard pada postingan
+        # channel menimpa tombol Comment bawaan Telegram, jadi kalau dipasang
+        # sekarang postingan ini kehilangan tombol komentar sampai
+        # auto-forward tiba. Pemasangan dilakukan di discussion handler,
+        # begitu id thread diskusi diketahui, sehingga tombol komentar
+        # pengganti bisa ikut disertakan.
 
         add_send_log(user.id)
         record_activity(user.id, "menfess")
@@ -4767,6 +4788,11 @@ async def discussion_comment_handler(update, context):
                     None,
                     menfess["sender_id"],
                 )
+                # Sekarang id thread sudah diketahui, jadi tombol komentar
+                # pengganti bisa dipasang bersama tombol lapor.
+                await refresh_post_actions(
+                    context.bot, menfess["id"], force=True
+                )
         return
 
     # User yang dibatasi (termasuk shadowban): komentarnya dihapus tanpa
@@ -4828,6 +4854,8 @@ async def discussion_comment_handler(update, context):
     record_activity(message.from_user.id, "comment", source_id=message.message_id)
     if event_activity_is_valid(message.text or message.caption or "", "comment"):
         add_event_points(message.from_user.id, comment=1, menfess_id=menfess["id"])
+
+    await refresh_post_actions(context.bot, menfess["id"])
 
     if LOG_ALL_COMMENTS:
         logged = find_discussion_message(message.chat.id, message.message_id)
@@ -5019,14 +5047,77 @@ def mark_reports_handled(target_type, target_id, actor_id):
     return n
 
 
-def report_menu(menfess_id):
-    """Tombol yang menempel di setiap postingan menfess di channel."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            t("btn_report", DEFAULT_LANG),
-            callback_data=f"rep:lapor:{menfess_id}",
-        )]
-    ])
+# Throttle edit tombol. Tanpa ini, postingan yang ramai komentar akan
+# di-edit berkali-kali dalam hitungan detik dan kena rate limit Telegram.
+_comment_btn_last = {}
+COMMENT_BTN_MIN_INTERVAL = 20
+
+
+def post_action_menu(menfess, discussion_root_id=None, comment_count=None):
+    """Tombol di postingan channel: buka komentar, lalu lapor.
+
+    PENTING: memasang inline keyboard pada postingan channel MENIMPA tombol
+    Comment bawaan Telegram. Bot API tidak punya cara mempertahankan
+    keduanya. Karena itu tombol komentar harus disediakan sendiri di sini
+    sebagai tautan ke thread diskusi; kalau tidak, menambahkan tombol lapor
+    berarti menghapus satu-satunya jalan orang berkomentar.
+    """
+    rows = []
+    if discussion_root_id:
+        label = (
+            t("btn_comment_n", DEFAULT_LANG, n=comment_count)
+            if comment_count else t("btn_comment", DEFAULT_LANG)
+        )
+        rows.append([InlineKeyboardButton(
+            label,
+            url=(
+                f"{channel_post_url(menfess['channel_message_id'])}"
+                f"?comment={discussion_root_id}"
+            ),
+        )])
+    rows.append([InlineKeyboardButton(
+        t("btn_report", DEFAULT_LANG),
+        callback_data=f"rep:lapor:{menfess['id']}",
+    )])
+    return InlineKeyboardMarkup(rows)
+
+
+async def refresh_post_actions(bot, menfess_id, force=False):
+    """Pasang atau perbarui tombol di postingan channel.
+
+    Dipanggil setelah auto-forward tiba (saat id thread diketahui) dan
+    setiap ada komentar baru, supaya angka di tombol ikut naik.
+    """
+    menfess = get_menfess(menfess_id)
+    if not menfess:
+        return
+    root = get_discussion_root(menfess_id)
+    if not root:
+        # Thread belum ada. Jangan pasang keyboard apa pun: membiarkan
+        # postingan tanpa keyboard berarti tombol Comment bawaan Telegram
+        # tetap tampil, dan itu lebih penting daripada tombol lapor.
+        return
+
+    now = time.time()
+    if not force:
+        last = _comment_btn_last.get(int(menfess_id), 0)
+        if now - last < COMMENT_BTN_MIN_INTERVAL:
+            return
+    _comment_btn_last[int(menfess_id)] = now
+
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=CHANNEL_CHAT_ID or CHANNEL_USERNAME,
+            message_id=menfess["channel_message_id"],
+            reply_markup=post_action_menu(
+                menfess, root["message_id"], count_menfess_comments(menfess_id)
+            ),
+        )
+    except BadRequest as exc:
+        if "not modified" not in str(exc).lower():
+            logging.info("Gagal memperbarui tombol postingan: %s", exc)
+    except Exception:
+        logging.info("Gagal memperbarui tombol postingan %s", menfess_id)
 
 
 def report_reason_menu(menfess_id):
