@@ -8,8 +8,14 @@ import logging
 import hashlib
 from functools import wraps
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MessageEntity,
+)
 from telegram.constants import ChatMemberStatus
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -121,6 +127,84 @@ EMOJI = {
 CHANNEL_CHAT_ID = None
 DISCUSSION_CHAT_ID = None
 BOT_USER_ID = None
+
+
+# ============================================================
+# RELAY YANG MEMPERTAHANKAN FORMATTING
+# Telegram mengirim formatting (bold, spoiler, link, emoji premium)
+# sebagai daftar "entity" yang terpisah dari teks polos. Meneruskan
+# message.text saja membuang semuanya, dan emoji premium jatuh ke
+# emoji biasa. Helper di bawah ikut meneruskan entity aslinya.
+#
+# Batasan custom emoji (emoji premium) dari Bot API:
+#   - bot yang punya username Fragment: boleh di semua chat
+#   - bot biasa: hanya di chat privat/grup/supergrup, dan hanya kalau
+#     owner bot punya Telegram Premium (Bot API 9.4)
+#   - channel tidak termasuk, jadi post menfess di channel tetap
+#     memakai emoji fallback kecuali bot punya username Fragment
+# Kalau Telegram menolak entity custom emoji, pesan dikirim ulang
+# tanpa entity itu supaya menfess tetap masuk.
+# ============================================================
+
+def utf16_len(text):
+    """Panjang teks dalam satuan UTF-16, satuan yang dipakai offset entity."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def shift_entities(entities, offset):
+    """Salin entity dengan offset digeser, dipakai saat teks diberi prefix."""
+    return [
+        MessageEntity(
+            type=entity.type,
+            offset=entity.offset + offset,
+            length=entity.length,
+            url=entity.url,
+            user=entity.user,
+            language=entity.language,
+            custom_emoji_id=entity.custom_emoji_id,
+        )
+        for entity in (entities or [])
+    ]
+
+
+def has_custom_emoji(entities):
+    return any(e.type == MessageEntity.CUSTOM_EMOJI for e in (entities or []))
+
+
+def without_custom_emoji(entities):
+    return [e for e in (entities or []) if e.type != MessageEntity.CUSTOM_EMOJI]
+
+
+async def send_text_keep_format(bot, chat_id, text, entities=None, **kwargs):
+    """send_message yang mempertahankan formatting asli pengirim."""
+    try:
+        return await bot.send_message(chat_id, text, entities=entities, **kwargs)
+    except BadRequest:
+        if not has_custom_emoji(entities):
+            raise
+        logging.info("Emoji premium ditolak Telegram, kirim ulang tanpa custom emoji.")
+        return await bot.send_message(
+            chat_id, text, entities=without_custom_emoji(entities), **kwargs
+        )
+
+
+async def send_photo_keep_format(
+    bot, chat_id, photo, caption=None, caption_entities=None, **kwargs
+):
+    """send_photo yang mempertahankan formatting caption asli pengirim."""
+    try:
+        return await bot.send_photo(
+            chat_id, photo, caption=caption,
+            caption_entities=caption_entities, **kwargs
+        )
+    except BadRequest:
+        if not has_custom_emoji(caption_entities):
+            raise
+        logging.info("Emoji premium ditolak Telegram, kirim ulang tanpa custom emoji.")
+        return await bot.send_photo(
+            chat_id, photo, caption=caption,
+            caption_entities=without_custom_emoji(caption_entities), **kwargs
+        )
 
 
 # ============================================================
@@ -2025,18 +2109,26 @@ async def process_private_comment_reply(update, context, db_id):
     target_message_id = comment["message_id"]
 
     try:
+        prefix = f"{EMOJI['reply']} "
+        shift = utf16_len(prefix)
         if update.message.text:
-            sent = await context.bot.send_message(
+            sent = await send_text_keep_format(
+                context.bot,
                 discussion_chat_id,
-                f"{EMOJI['reply']} {update.message.text}",
+                prefix + update.message.text,
+                entities=shift_entities(update.message.entities, shift),
                 reply_to_message_id=target_message_id,
                 allow_sending_without_reply=False,
             )
         elif update.message.photo:
-            sent = await context.bot.send_photo(
+            sent = await send_photo_keep_format(
+                context.bot,
                 discussion_chat_id,
                 update.message.photo[-1].file_id,
-                caption=f"{EMOJI['reply']} {update.message.caption or ''}",
+                caption=prefix + (update.message.caption or ""),
+                caption_entities=shift_entities(
+                    update.message.caption_entities, shift
+                ),
                 reply_to_message_id=target_message_id,
                 allow_sending_without_reply=False,
             )
@@ -2114,15 +2206,19 @@ async def process_new_menfess(update, context):
 
     try:
         if message.text:
-            sent = await context.bot.send_message(
+            sent = await send_text_keep_format(
+                context.bot,
                 CHANNEL_USERNAME,
                 message.text,
+                entities=message.entities,
             )
         elif message.photo:
-            sent = await context.bot.send_photo(
+            sent = await send_photo_keep_format(
+                context.bot,
                 CHANNEL_USERNAME,
                 message.photo[-1].file_id,
                 caption=message.caption or "",
+                caption_entities=message.caption_entities,
             )
         else:
             await message.reply_text(
