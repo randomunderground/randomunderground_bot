@@ -1492,14 +1492,46 @@ def get_discussion_message_by_db_id(db_id):
 # COMMUNITY FEATURES
 # ============================================================
 
+# Pertanyaan harian bertema cybersec dan praktik keamanan sehari-hari.
+# Sengaja yang jawabannya pengalaman atau pendapat, bukan yang bisa dijawab
+# satu kata, supaya kolom komentar benar-benar jalan.
 QOTD = [
-    "Kalau besok libur total, kamu paling pengen ngapain?",
-    "Makanan yang nggak pernah kamu tolak apa?",
-    "Tim begadang atau tim bangun pagi?",
-    "Hal receh apa yang akhir-akhir ini bikin kamu ketawa?",
-    "Kalau bisa langsung jago satu skill, pilih apa?",
-    "Lagu apa yang lagi paling sering kamu putar?",
-    "Mending WiFi gratis seumur hidup atau makanan gratis seumur hidup?",
+    "Tool cybersec pertama yang kamu pelajari, apa? Masih dipakai?",
+    "Pernah kena phishing atau hampir kena? Ceritanya gimana?",
+    "Satu kebiasaan kecil yang paling ningkatin keamanan kamu, apa?",
+    "Distro Linux pertama kamu apa, dan kenapa pindah atau kenapa tetap?",
+    "2FA kamu pakai apa: SMS, authenticator app, atau hardware key?",
+    "Satu hal soal privasi online yang orang awam masih salah paham, apa?",
+    "Password manager: pakai yang mana, atau masih ngandalin ingatan?",
+    "Alasan kamu masuk dunia keamanan atau IT, apa?",
+    "Insiden kebocoran data mana yang paling bikin kamu kaget?",
+    "Pernah ikut CTF? Kategori apa yang paling kamu suka?",
+    "Satu hal yang kamu berhenti lakukan online setelah tahu risikonya, apa?",
+    "Kalau kamu harus ngajarin satu praktik keamanan ke orang tua kamu, pilih apa?",
+    "Menurut kamu, keamanan itu lebih sering gagal karena tekniknya atau karena orangnya?",
+    "Sertifikasi atau pengalaman langsung, mana yang lebih kepakai di lapangan?",
+]
+
+# Pemancing saat base sepi. Semua berupa dua pilihan yang memaksa orang
+# berpihak dan menjelaskan alasannya. Isinya debat yang memang hidup di
+# komunitas keamanan, bukan pertanyaan receh.
+QUIET_PROMPTS = [
+    "Windows atau Linux buat kerjaan sehari-hari? Alasannya apa.",
+    "Nemu celah di web orang: laporin ke pemiliknya, publish, atau diem aja?",
+    "Mending semua enkripsi dilemahkan demi penegak hukum, atau nggak ada backdoor sama sekali walau kejahatan jadi susah diungkap?",
+    "Password manager cloud atau offline? Kenapa.",
+    "Mending jadi red team atau blue team?",
+    "VPN berbayar atau self-host?",
+    "Mending semua software jadi open source, atau semua perusahaan wajib bayar bug bounty yang layak?",
+    "2FA SMS yang praktis tapi rawan SIM swap, atau hardware key yang aman tapi bisa hilang?",
+    "Mending data kamu bocor dari satu perusahaan besar, atau tersebar di seratus aplikasi kecil?",
+    "Full disk encryption: worth the hassle, atau lebay buat laptop harian?",
+    "Kali Linux buat dipakai harian: masuk akal, atau salah alat?",
+    "Mending semua orang wajib pakai nama asli di internet, atau semua orang wajib anonim?",
+    "Bug bounty lepas atau kerja in-house? Mana yang lebih worth it.",
+    "Mending lengserkan CEO Google, atau naikkan domain kita ke halaman satu?",
+    "Antivirus di Linux: perlu, atau cuma nambah attack surface?",
+    "Mending sistem yang aman tapi ribet dipakai, atau gampang dipakai tapi ada lubang kecil?",
 ]
 
 MISSION_POOL = [
@@ -7176,25 +7208,65 @@ async def event_help_command(update, context):
 
 
 async def community_watcher(application):
+    """QOTD harian dan pemancing saat base sepi.
+
+    Versi sebelumnya menulis "\\n" (backslash-n) di dalam string biasa, jadi
+    yang tayang di channel adalah tulisan backslash-n apa adanya, bukan baris
+    baru. Sekarang memakai newline sebenarnya.
+    """
     while True:
         try:
-            now=int(time.time())
-            # Send one daily QOTD at ~20:00 local time, once per day.
-            local=time.localtime(now); key=day_key(now)
+            now = int(time.time())
+            local = time.localtime(now)
+            key = day_key(now)
+
+            # Satu QOTD per hari, sekitar jam 20:00 waktu lokal.
             if local.tm_hour == 20 and local.tm_min == 0:
-                conn=db(); sent=conn.execute("SELECT value FROM community_meta WHERE key=?",(f"qotd:{key}",)).fetchone()
+                conn = db()
+                sent = conn.execute(
+                    "SELECT value FROM community_meta WHERE key=?",
+                    (f"qotd:{key}",),
+                ).fetchone()
                 if not sent:
-                    q=QOTD[int(time.strftime("%j",local)) % len(QOTD)]
-                    await application.bot.send_message(CHANNEL_USERNAME,"QUESTION OF THE DAY\\n\\n"+q+"\\n\\n▸ Jawab di komentar.")
-                    conn.execute("INSERT OR REPLACE INTO community_meta VALUES (?,?)",(f"qotd:{key}","sent")); conn.commit()
+                    q = QOTD[int(time.strftime("%j", local)) % len(QOTD)]
+                    await application.bot.send_message(
+                        CHANNEL_USERNAME,
+                        "QUESTION OF THE DAY\n\n"
+                        + q
+                        + "\n\n▸ Jawab di komentar.",
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO community_meta VALUES (?,?)",
+                        (f"qotd:{key}", "sent"),
+                    )
+                    conn.commit()
                 conn.close()
-            # If base has been quiet for 2h, send one prompt, max once per 6h.
-            conn=db(); last=conn.execute("SELECT MAX(created_at) x FROM discussion_messages").fetchone()["x"] or 0
-            cool=conn.execute("SELECT value FROM community_meta WHERE key='quiet:last'").fetchone(); last_prompt=int(cool["value"]) if cool else 0
+
+            # Base sepi 2 jam: kirim satu pemancing, paling sering tiap 6 jam.
+            conn = db()
+            last = conn.execute(
+                "SELECT MAX(created_at) x FROM discussion_messages"
+            ).fetchone()["x"] or 0
+            cool = conn.execute(
+                "SELECT value FROM community_meta WHERE key='quiet:last'"
+            ).fetchone()
+            last_prompt = int(cool["value"]) if cool else 0
             conn.close()
-            if now-last>=7200 and now-last_prompt>=21600:
-                await application.bot.send_message(CHANNEL_USERNAME,"BASE SEPI\\n\\nMending WiFi gratis seumur hidup atau makanan gratis seumur hidup?\\n\\n▸ Bahas di komentar.")
-                conn=db(); conn.execute("INSERT OR REPLACE INTO community_meta VALUES ('quiet:last',?)",(str(now),)); conn.commit(); conn.close()
+
+            if now - last >= 7200 and now - last_prompt >= 21600:
+                # Dirotasi supaya tidak mengirim pertanyaan yang sama terus.
+                prompt = QUIET_PROMPTS[(now // 21600) % len(QUIET_PROMPTS)]
+                await application.bot.send_message(
+                    CHANNEL_USERNAME,
+                    "BASE SEPI\n\n" + prompt + "\n\n▸ Bahas di komentar.",
+                )
+                conn = db()
+                conn.execute(
+                    "INSERT OR REPLACE INTO community_meta VALUES ('quiet:last',?)",
+                    (str(now),),
+                )
+                conn.commit()
+                conn.close()
         except Exception:
             logging.exception("Community watcher error")
         await asyncio.sleep(30)
