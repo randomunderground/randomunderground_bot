@@ -3693,20 +3693,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         return
 
-    await query.answer()
     user = query.from_user
     save_user(user)
     data = query.data or ""
     lang = get_user_lang(user.id)
 
-    # Tombol moderasi khusus owner; diproses sebelum pengecekan ban.
+    # SATU callback query hanya boleh dijawab SEKALI. Handler di bawah
+    # mengirim umpan baliknya sebagai popup lewat query.answer(), jadi
+    # mereka harus diproses SEBELUM query.answer() kosong di bawah ini.
+    # Kalau tidak, popup mereka menjadi jawaban kedua, ditolak Telegram,
+    # dan user tidak melihat konfirmasi apa pun: tombol lapor terasa
+    # error, dan tombol IKUT GIVEAWAY terasa tidak melakukan apa-apa.
+    # Setiap handler di bawah bertanggung jawab menjawab tepat sekali.
     if data.startswith("mod:"):
         await handle_mod_callback(update, context, data)
         return
 
-    # Tombol giveaway menempel di postingan channel. Diproses sebelum
-    # block_if_banned karena umpan baliknya harus lewat toast, bukan pesan
-    # balasan yang akan terlihat publik di channel.
+    # Tombol giveaway menempel di postingan channel, jadi umpan baliknya
+    # harus lewat popup, bukan pesan balasan yang akan terlihat publik.
     if data.startswith("gw:"):
         await handle_giveaway_callback(update, context, data)
         return
@@ -3714,6 +3718,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("rep:"):
         await handle_report_callback(update, context, data)
         return
+
+    await query.answer()
 
     if await block_if_banned(update, context, user):
         return
@@ -5454,6 +5460,9 @@ async def handle_report_callback(update, context, data):
             pass
         return
 
+    # Aksi tak dikenal: tetap jawab supaya tombol tidak menggantung.
+    await toast("", alert=False)
+
 
 @owner_only
 async def reports_command(update, context):
@@ -7095,6 +7104,14 @@ async def handle_mod_callback(update, context, data):
             pass
         return
 
+    # Jalur owner memberi umpan balik lewat pesan balasan, bukan popup,
+    # jadi callback-nya dijawab kosong di sini supaya loading di tombol
+    # berhenti. Jalur non-owner di atas sudah menjawab dengan alert.
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     parts = data.split(":")
     action = parts[1] if len(parts) > 1 else ""
     try:
@@ -7349,6 +7366,9 @@ async def handle_giveaway_callback(update, context, data):
         await toast(t("gw_claim_ok", lang))
         await notify_claim(context.bot, gv, user.id, "")
         return
+
+    # Aksi tak dikenal: tetap jawab supaya tombol tidak menggantung.
+    await toast("", alert=False)
 
 
 # ------------------------------------------------------------
