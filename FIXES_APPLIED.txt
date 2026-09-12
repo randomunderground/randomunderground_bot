@@ -1,0 +1,108 @@
+================================================================
+RANDOM UNDERGROUND BOT - REMEDIASI TERPASANG
+Tanggal: 2026-09-12
+Referensi temuan: lihat SECURITY_REPORT.txt
+================================================================
+
+STATUS: Semua Critical + High + isu terpilih sudah diperbaiki. Kedua file lolos
+py_compile dan smoke-test impor penuh (telegram + PIL) di venv.
+
+----------------------------------------------------------------
+YANG SUDAH DIPERBAIKI
+----------------------------------------------------------------
+
+[C1] Token tidak lagi di source.
+  randomunderground_bot.py:
+    - BOT_TOKEN kini dibaca hanya dari environment (default kosong), tanpa token hardcoded.
+    - Ditambah _load_env_files(".envo",".env"): loader ringan tanpa dependency yang mengisi
+      os.environ dari file lokal, TIDAK menimpa env yang sudah diset (env var menang).
+    - Guard startup: RuntimeError bila token kosong.
+  Token asli sekarang hanya ada di .envo (perm 0600, sudah gitignored + dockerignored).
+
+[C2] Token tidak lagi bisa masuk image Docker.
+  Dockerfile:
+    - Tetap "COPY . ." tapi bot.py sudah bersih dari token dan .envo dikecualikan .dockerignore.
+    - Install ffmpeg + fonts-dejavu-core (dibutuhkan modul creative).
+    - Jalankan sebagai user non-root (appuser uid 10001).
+    - Instruksi: token di-inject saat runtime (docker run -e ...), bukan lewat build.
+  .dockerignore & .gitignore: tambah pola *.before_*.py, *_before_*.py, aw, dir creative,
+    supaya backup dan artefak tidak ikut ter-copy/ter-commit.
+
+[H1] Anti-DoS pada modul creative (render ffmpeg/PIL).
+  randomunderground_creative_v17.py:
+    - Semaphore global _MAX_CONCURRENT_RENDERS=2 (batas render berat bersamaan).
+    - Cooldown per user _RENDER_COOLDOWN=8 detik + penanda _user_inflight (cegah spam & tumpang tindih).
+    - Diterapkan di done_command (JJ) dan creative_photo_handler (polaroid/dump/sticker/meme).
+
+[H2] event_watcher tidak lagi polling tiap 1 detik.
+  randomunderground_bot.py: interval dinaikkan ke 30 detik (cukup presisi untuk akhiri event).
+
+[M3] Fitur creative kini butuh subscribe channel.
+  _creative_allowed() memanggil is_subscribed (lazy import, anti circular import).
+  Diterapkan pada entry jj_upload dan photo tools, samakan dengan alur menfess.
+
+[M4] Guard decompression bomb.
+  Image.MAX_IMAGE_PIXELS = 40_000_000 di modul creative.
+
+[L3] Janitor file creative.
+  creative_files_janitor(): hapus file di creative_uploads/ dan creative_renders/ yang lebih
+  tua dari 1 jam, jalan tiap 30 menit. Diaktifkan di post_init.
+
+[C3] Token tidak lagi bocor ke log container.
+  randomunderground_bot.py main(): httpx mencatat URL request lengkap di level
+  INFO, dan token ada di path URL Telegram, sehingga token tampil plaintext di
+  "docker logs". Logger httpx + httpcore dinaikkan ke WARNING.
+
+[C4] Database kini persisten lewat volume mount.
+  Karena .dockerignore (benar) mengecualikan *.db, DB tidak lagi ikut ke image,
+  dan mode WAL butuh file -wal/-shm sedirektori. DB_FILE kini mengikuti
+  RANDOMUNDERGROUND_DATA_DIR - env var yang sudah dipakai modul creative dan
+  janitor - sehingga satu mount mencakup DB + direktori creative.
+  Sebelum ini container jalan TANPA mount: "docker rm" = database hilang.
+  Lihat DEPLOY.txt untuk perintah lengkapnya.
+
+RELIABILITAS ("berjalan lebih baik"):
+  - db(): timeout=30 + PRAGMA journal_mode=WAL + busy_timeout=5000 -> kurangi error
+    "database is locked" saat handler async dan background watcher akses DB bersamaan.
+  - Tiga baris "add_event_points(...) if ... else None" (side-effect via ternary) diubah
+    jadi blok if biasa: lebih jelas dan mudah di-maintain.
+
+----------------------------------------------------------------
+SENGAJA TIDAK DIUBAH (dengan alasan)
+----------------------------------------------------------------
+[M1] IDOR profile:badges:<id>: data profil (poin/menfess/komentar) memang publik by design
+     (bisa dilihat via /profile @username dan leaderboard), jadi bukan kebocoran rahasia.
+     Mengubahnya akan merusak fitur "lihat profil orang lain". Dibiarkan.
+[M2] Race kuota (TOCTOU): python-telegram-bot memproses update secara sekuensial secara default
+     (concurrent_updates=False), jadi tidak praktis dieksploitasi. Dibiarkan agar tidak menambah risiko.
+[L1] Filter kata kasar mudah dibypass: ini kontrol moderasi, bukan keamanan. Dibiarkan.
+
+----------------------------------------------------------------
+YANG HARUS KAMU LAKUKAN (di luar kode)
+----------------------------------------------------------------
+1. [SELESAI 2026-09-12] Token lama sudah di-revoke di @BotFather.
+   Token pengganti dipasang di .envo dan diverifikasi hidup lewat getMe.
+2. Deploy / restart: lihat DEPLOY.txt. Ringkasnya token di-inject runtime
+   dan direktori data di-mount:
+      docker build -t randomunderground-bot:latest .
+      set -a && . ./.envo && set +a
+      docker run -d --name my-randomunderground-bot --restart unless-stopped \
+        -e RANDOMUNDERGROUND_BOT_TOKEN="$RANDOMUNDERGROUND_BOT_TOKEN" \
+        -e RANDOMUNDERGROUND_DATA_DIR=/app/data \
+        -v "$PWD/data:/app/data" randomunderground-bot:latest
+   Jangan commit .envo dan jangan hardcode token di manapun.
+3. Perubahan kode SENGAJA belum di-commit (commit sempat dibuat lalu di-reset
+   atas permintaan). Semua ada sebagai file uncommitted di working tree.
+   Salinan lengkap beserta riwayat commit ada di folder backup terpisah.
+   Saat nanti di-commit, pastikan .envo TIDAK ikut (sudah gitignored).
+4. Repo remote (origin) saat ini private. Bila suatu saat dibuat public,
+   pindahkan SECURITY_REPORT.txt keluar repo - file itu memuat daftar
+   kelemahan termasuk yang sengaja tidak diperbaiki.
+
+----------------------------------------------------------------
+VERIFIKASI
+----------------------------------------------------------------
+- py_compile: OK (bot + creative).
+- Smoke test impor penuh (venv): OK; helper anti-DoS & janitor terdeteksi; PIL guard aktif.
+- git grep di seluruh history + working tree: TIDAK ada token di file yang dilacak git.
+================================================================

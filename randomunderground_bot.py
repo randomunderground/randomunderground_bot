@@ -27,7 +27,30 @@ from randomunderground_creative_v17 import register_creative_handlers
 # V16: weighted comment points; preserves all existing Event scores
 # ============================================================
 
-BOT_TOKEN = os.getenv("RANDOMUNDERGROUND_BOT_TOKEN", "ISI_TOKEN_BOT_KAMU_DI_SINI")
+def _load_env_files(*paths):
+    """Load KEY=VALUE lines from local env files into os.environ without
+    overriding variables already set. Dependency-free; secrets stay out of source."""
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+
+
+_load_env_files(".envo", ".env")
+
+BOT_TOKEN = os.getenv("RANDOMUNDERGROUND_BOT_TOKEN", "").strip()
 CHANNEL_USERNAME = "@randomunderground"
 DISCUSSION_GROUP_USERNAME = "@randomundergrounds"
 
@@ -61,7 +84,9 @@ ALL_TIME_LEADERBOARD_SIZE = 20
 # V16 adds a separate comment-points epoch so existing scores are never rebuilt.
 
 
-DB_FILE = "randomunderground.db"
+DATA_DIR = os.getenv("RANDOMUNDERGROUND_DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_FILE = os.path.join(DATA_DIR, "randomunderground.db")
 
 VALID_HASHTAGS = {
     "#mutual": "cari mutual / teman baru",
@@ -103,8 +128,15 @@ BOT_USER_ID = None
 # ============================================================
 
 def db():
-    conn = sqlite3.connect(DB_FILE)
+    # timeout + WAL + busy_timeout: kurangi error "database is locked" saat
+    # handler async dan background watcher mengakses DB bersamaan.
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.Error:
+        pass
     return conn
 
 
@@ -419,26 +451,26 @@ def get_discussion_message_by_db_id(db_id):
 # ============================================================
 
 QOTD = [
-    "Kalau besok libur total, kamu paling pengen ngapain? 😭",
-    "Makanan yang nggak pernah kamu tolak apa? 👀",
-    "Tim begadang atau tim bangun pagi? 🌙☀️",
-    "Hal receh apa yang akhir-akhir ini bikin kamu ketawa? 😭",
-    "Kalau bisa langsung jago satu skill, pilih apa? ✨",
-    "Lagu apa yang lagi paling sering kamu putar? 🎧",
-    "Mending WiFi gratis seumur hidup atau makanan gratis seumur hidup? 😭",
+    "Kalau besok libur total, kamu paling pengen ngapain?",
+    "Makanan yang nggak pernah kamu tolak apa?",
+    "Tim begadang atau tim bangun pagi?",
+    "Hal receh apa yang akhir-akhir ini bikin kamu ketawa?",
+    "Kalau bisa langsung jago satu skill, pilih apa?",
+    "Lagu apa yang lagi paling sering kamu putar?",
+    "Mending WiFi gratis seumur hidup atau makanan gratis seumur hidup?",
 ]
 
 MISSION_POOL = [
-    ("comment3", "💬 Komentar 3 kali di base"),
-    ("comment5", "💬 Komentar 5 kali di base"),
-    ("menfess1", "💌 Kirim 1 menfess"),
-    ("comment10", "🔥 Komentar 10 kali di base"),
+    ("comment3", "Komentar 3 kali di base"),
+    ("comment5", "Komentar 5 kali di base"),
+    ("menfess1", "Kirim 1 menfess"),
+    ("comment10", "Komentar 10 kali di base"),
 ]
 
 TITLE_RULES = [
-    ("👑 UNDERGROUND LEGEND", 500),
-    ("🔥 UNDERGROUND ADDICT", 250),
-    ("💬 TALKATIVE", 100),
+    ("◆ UNDERGROUND LEGEND", 500),
+    ("◆ UNDERGROUND ADDICT", 250),
+    ("◆ TALKATIVE", 100),
     ("◈ ACTIVE MEMBER", 50),
     ("◉ NEW ARRIVAL", 0),
 ]
@@ -502,7 +534,7 @@ def claim_daily_mission(user_id, mission_key):
         conn.commit(); ok=True
     except sqlite3.IntegrityError: ok=False
     conn.close()
-    return ok, ("🎉 Misi selesai! +10 Mission Points." if ok else "Misi ini sudah kamu klaim hari ini.")
+    return ok, ("Misi selesai. +10 Mission Points." if ok else "Misi ini sudah kamu klaim hari ini.")
 
 
 def daily_mission_text(user_id):
@@ -511,7 +543,7 @@ def daily_mission_text(user_id):
     labels={k:v for k,v in MISSION_POOL}
     lines=["◆ DAILY MISSION","", "Selesaikan misi hari ini!"]
     for k in (row["mission1"],row["mission2"],row["mission3"]):
-        p,target=mission_progress(user_id,k); mark="✅" if k in claimed else f"{p}/{target}"
+        p,target=mission_progress(user_id,k); mark="✓" if k in claimed else f"{p}/{target}"
         lines.append(f"{mark} {labels[k]}")
     return "\n".join(lines)
 
@@ -520,10 +552,10 @@ def mission_menu(user_id):
     row=ensure_daily_missions()
     labels={k:v for k,v in MISSION_POOL}
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"✅ {labels[row['mission1']]}",callback_data=f"mission:{row['mission1']}" )],
-        [InlineKeyboardButton(f"✅ {labels[row['mission2']]}",callback_data=f"mission:{row['mission2']}" )],
-        [InlineKeyboardButton(f"✅ {labels[row['mission3']]}",callback_data=f"mission:{row['mission3']}" )],
-        [InlineKeyboardButton("↩️ COMMUNITY",callback_data="community")],
+        [InlineKeyboardButton(f"✓ {labels[row['mission1']]}",callback_data=f"mission:{row['mission1']}" )],
+        [InlineKeyboardButton(f"✓ {labels[row['mission2']]}",callback_data=f"mission:{row['mission2']}" )],
+        [InlineKeyboardButton(f"✓ {labels[row['mission3']]}",callback_data=f"mission:{row['mission3']}" )],
+        [InlineKeyboardButton("← COMMUNITY",callback_data="community")],
     ])
 
 
@@ -531,9 +563,9 @@ def mission_menu(user_id):
 BADGE_RULES = [
     ("◉ NEW ARRIVAL", "Aktif dan mulai meramaikan RANDOM UNDERGROUND."),
     ("◈ ACTIVE MEMBER", "Mencapai 50 poin All-Time."),
-    ("💬 TALKATIVE", "Mencapai 100 poin All-Time."),
-    ("🔥 UNDERGROUND ADDICT", "Mencapai 250 poin All-Time."),
-    ("👑 UNDERGROUND LEGEND", "Mencapai 500 poin All-Time."),
+    ("◆ TALKATIVE", "Mencapai 100 poin All-Time."),
+    ("◆ UNDERGROUND ADDICT", "Mencapai 250 poin All-Time."),
+    ("◆ UNDERGROUND LEGEND", "Mencapai 500 poin All-Time."),
     ("✦ MENFESS ADDICT", "Mengirim sedikitnya 25 menfess."),
     ("✦ CHATTERBOX", "Mengirim sedikitnya 100 komentar."),
     ("⚡ EVENT WINNER", "Pernah masuk daftar pemenang event."),
@@ -664,9 +696,9 @@ def profile_text(target_user):
         f"◆ All-Time Points: {stats['points']}",
     ]
     if hidden:
-        lines.append("🔒 Rank: disembunyikan")
+        lines.append("▪ Rank: disembunyikan")
     else:
-        lines.append(f"◆ All-Time Rank: #{rank}" if rank else "🏆 Rank All-Time: belum masuk leaderboard")
+        lines.append(f"◆ All-Time Rank: #{rank}" if rank else "▪ Rank All-Time: belum masuk leaderboard")
 
     lines += [
         f"◆ Weekly Activity: {stats['week_activity']}",
@@ -684,8 +716,8 @@ def profile_text(target_user):
 
 def profile_menu(user_id):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎖️ LIHAT SEMUA BADGE", callback_data=f"profile:badges:{user_id}")],
-        [InlineKeyboardButton("↩️ MENU", callback_data="back_menu")],
+        [InlineKeyboardButton("◆ SEMUA BADGE", callback_data=f"profile:badges:{user_id}")],
+        [InlineKeyboardButton("← MENU", callback_data="back_menu")],
     ])
 
 
@@ -694,7 +726,7 @@ def profile_badges_text(user_id):
     earned = {name for name, _ in get_profile_badges(stats)}
     lines = ["◆ PROFILE BADGES", ""]
     for name, description in BADGE_RULES:
-        mark = "✅" if name in earned else "🔒"
+        mark = "✓" if name in earned else "·"
         lines.append(f"{mark} {name}\n   {description}")
     return "\n".join(lines)
 
@@ -716,7 +748,7 @@ async def profile_command(update, context):
         ).fetchone()
         conn.close()
         if not row:
-            await update.message.reply_text("🫧 Username itu belum ditemukan di database RANDOM UNDERGROUND.")
+            await update.message.reply_text("✕ Username itu belum ditemukan di database RANDOM UNDERGROUND.")
             return
         # Build a lightweight Telegram-like target from saved DB data.
         class SavedUser:
@@ -742,7 +774,7 @@ def community_menu():
         [InlineKeyboardButton("◆ COMMENT SPOTLIGHT",callback_data="community:comment")],
         [InlineKeyboardButton("◆ MYSTERY DROP",callback_data="community:box")],
         [InlineKeyboardButton("◆ TRENDING",callback_data="community:trending")],
-        [InlineKeyboardButton("↩️ MENU",callback_data="back_menu")],
+        [InlineKeyboardButton("← MENU",callback_data="back_menu")],
     ])
 
 
@@ -753,18 +785,18 @@ def community_text():
 def weekly_mvp_text():
     rows=get_period_leaderboard("weekly",20)
     visible=[r for r in rows if r["user_id"] not in HIDDEN_LEADERBOARD_USER_IDS]
-    if not visible: return "🌟 WEEKLY MVP\n\nBelum ada MVP minggu ini. 🫧"
+    if not visible: return "WEEKLY MVP\n\nBelum ada MVP minggu ini."
     r=visible[0]; name=f"@{r['username']}" if r["username"] else (r["first_name"] or "Member")
-    return f"🌟 WEEKLY MVP\n\n🏆 {name}\n🔥 {r['points']} poin minggu ini!\n\nSiapa yang bakal ngerebut posisi MVP minggu depan? 👀"
+    return f"WEEKLY MVP\n\n▪ {name}\n▪ {r['points']} poin minggu ini\n\nSiapa yang bakal ngerebut posisi MVP minggu depan?"
 
 
 def comment_spotlight_text():
     conn=db()
     row=conn.execute('''SELECT d.*, COUNT(r.id) replies FROM discussion_messages d LEFT JOIN discussion_messages r ON r.parent_message_id=d.message_id WHERE d.parent_message_id IS NOT NULL GROUP BY d.id ORDER BY replies DESC,d.created_at DESC LIMIT 1''').fetchone()
     conn.close()
-    if not row: return "💬 COMMENT SPOTLIGHT\n\nBelum ada komentar yang bisa ditampilkan. 🫧"
+    if not row: return "COMMENT SPOTLIGHT\n\nBelum ada komentar yang bisa ditampilkan."
     text=row["content"] or "(komentar tanpa teks)"; text=text[:300]
-    return f"💬 COMMENT SPOTLIGHT\n\n✨ {text}\n\nKomentar ini paling banyak mendapat balasan!"
+    return f"COMMENT SPOTLIGHT\n\n✨ {text}\n\nKomentar ini paling banyak mendapat balasan!"
 
 
 def trending_text():
@@ -775,19 +807,19 @@ def trending_text():
     for r in rows:
         for h in re.findall(r"#[A-Za-z0-9_]+", r["content"] or ""):
             h=h.lower(); counts[h]=counts.get(h,0)+1
-    if not counts: return "🔥 TRENDING\n\nBelum cukup data minggu ini. 🫧"
+    if not counts: return "TRENDING\n\nBelum cukup data minggu ini."
     top=sorted(counts.items(), key=lambda x:(-x[1],x[0]))[:5]
-    return "🔥 TRENDING 7 HARI\n\n"+"\n".join(f"{i}. {h} — {n} post" for i,(h,n) in enumerate(top,1))
+    return "TRENDING 7 HARI\n\n"+"\n".join(f"{i}. {h} — {n} post" for i,(h,n) in enumerate(top,1))
 
 
 def mystery_box_text(user_id):
     key=day_key(); conn=db(); row=conn.execute("SELECT reward FROM mystery_claims WHERE day_key=? AND user_id=?",(key,user_id)).fetchone(); conn.close()
-    if row: return f"🎁 MYSTERY BOX\n\nHari ini hadiahnya: {row['reward']}\n\nBesok coba lagi! ✨"
+    if row: return f"MYSTERY BOX\n\nHari ini hadiahnya: {row['reward']}\n\nBesok coba lagi!"
     # Non-monetary reward; deterministic by user/day.
-    rewards=["🏷️ Badge Lucky Member","◈ Badge Night Walker","🔥 Badge Active","👑 Title Mini MVP"]
+    rewards=["Badge Lucky Member","◈ Badge Night Walker","Badge Active","Title Mini MVP"]
     reward=rewards[(user_id+int(time.strftime('%j')))%len(rewards)]
     conn=db(); conn.execute("INSERT INTO mystery_claims VALUES (?,?,?,?)",(key,user_id,reward,int(time.time()))); conn.commit(); conn.close()
-    return f"🎁 MYSTERY BOX\n\nKamu mendapatkan:\n\n{reward}\n\nBalik lagi besok! ✨"
+    return f"MYSTERY BOX\n\nKamu mendapatkan:\n\n{reward}\n\nBalik lagi besok!"
 
 # ============================================================
 # EVENT SYSTEM
@@ -1018,24 +1050,24 @@ def get_period_leaderboard(period, limit=20):
 
 def leaderboard_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🥇 ALL-TIME", callback_data="lb:all_time"),
-         InlineKeyboardButton("📅 WEEKLY", callback_data="lb:weekly")],
-        [InlineKeyboardButton("🗓️ MONTHLY", callback_data="lb:monthly"),
-         InlineKeyboardButton("🎉 EVENT", callback_data="lb:event")],
-        [InlineKeyboardButton("↩️ MENU", callback_data="back_menu")],
+        [InlineKeyboardButton("◆ ALL-TIME", callback_data="lb:all_time"),
+         InlineKeyboardButton("◆ WEEKLY", callback_data="lb:weekly")],
+        [InlineKeyboardButton("◆ MONTHLY", callback_data="lb:monthly"),
+         InlineKeyboardButton("◆ EVENT", callback_data="lb:event")],
+        [InlineKeyboardButton("← MENU", callback_data="back_menu")],
     ])
 
 
 def format_period_leaderboard(period):
     titles = {
-        "all_time": "♾️ ALL-TIME TOP 20",
-        "weekly": "📅 WEEKLY TOP 20",
-        "monthly": "🗓️ MONTHLY TOP 20",
+        "all_time": "ALL-TIME TOP 20",
+        "weekly": "WEEKLY TOP 20",
+        "monthly": "MONTHLY TOP 20",
     }
     rows = get_period_leaderboard(period, 20)
     if not rows:
-        return f"{titles[period]}\n\nBelum ada peserta. 🫧"
-    medals = ["🥇", "🥈", "🥉"]
+        return f"{titles[period]}\n\nBelum ada peserta."
+    medals = ["01", "02", "03"]
     lines = [titles[period], ""]
     for i, row in enumerate(rows, 1):
         name = f"@{row['username']}" if row['username'] else (row['first_name'] or f"User {row['user_id']}")
@@ -1051,12 +1083,12 @@ def format_public_event_leaderboard():
         event = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 1").fetchone()
         conn.close()
     if not event:
-        return "🎉 EVENT\n\nBelum ada event."
+        return "EVENT\n\nBelum ada event."
     rows = [r for r in get_event_leaderboard(event["id"], 30) if r["user_id"] not in HIDDEN_LEADERBOARD_USER_IDS][:20]
     if not rows:
-        return f"🎉 EVENT #{event['id']}\n\nBelum ada peserta. 🫧"
-    medals = ["🥇", "🥈", "🥉"]
-    lines = [f"🎉 EVENT #{event['id']} — TOP 20", ""]
+        return f"EVENT #{event['id']}\n\nBelum ada peserta."
+    medals = ["01", "02", "03"]
+    lines = [f"EVENT #{event['id']} — TOP 20", ""]
     for i, row in enumerate(rows, 1):
         name = f"@{row['username']}" if row['username'] else (row['first_name'] or f"User {row['user_id']}")
         prefix = medals[i-1] if i <= 3 else f"{i}."
@@ -1199,13 +1231,13 @@ async def moderate_message(message, context):
 
     if warning_no >= MAX_COMMENT_WARNINGS:
         warning_text = (
-            f"🫧 Pesan kamu dihapus karena mengandung kata yang tidak diperbolehkan.\n\n"
+            f"✕ Pesan kamu dihapus karena mengandung kata yang tidak diperbolehkan.\n\n"
             f"⚠️ Warning {warning_no}/{MAX_COMMENT_WARNINGS}.\n"
             f"Kalau terus diulang, akun bisa dibatasi dari komentar."
         )
     else:
         warning_text = (
-            f"🫧 Komentar kamu dihapus karena mengandung kata yang tidak diperbolehkan.\n\n"
+            f"✕ Komentar kamu dihapus karena mengandung kata yang tidak diperbolehkan.\n\n"
             f"⚠️ Warning {warning_no}/{MAX_COMMENT_WARNINGS}.\n"
             f"Yuk jaga kolom komentar RANDOM UNDERGROUND tetap nyaman."
         )
@@ -1265,12 +1297,20 @@ async def is_subscribed(user_id, context):
         member = await context.bot.get_chat_member(
             CHANNEL_USERNAME, user_id
         )
-        return member.status in (
+        allowed = member.status in (
             ChatMemberStatus.MEMBER,
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.OWNER,
         )
+        if not allowed:
+            logging.info(
+                "is_subscribed: user=%s status=%r -> ditolak", user_id, member.status
+            )
+        return allowed
     except Exception:
+        # Jangan telan diam-diam: tanpa log, kegagalan API tidak bisa dibedakan
+        # dari user yang memang belum subscribe.
+        logging.exception("is_subscribed gagal untuk user=%s", user_id)
         return False
 
 
@@ -1334,7 +1374,7 @@ def discussion_join_menu():
 
 def rules_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("↩️ MENU", callback_data="back_menu")]
+        [InlineKeyboardButton("← MENU", callback_data="back_menu")]
     ])
 
 
@@ -1345,7 +1385,7 @@ def view_menfess_button(menfess):
     )
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("◆ OPEN POST", url=url)],
-        [InlineKeyboardButton("↩️ MENU", callback_data="back_menu")],
+        [InlineKeyboardButton("← MENU", callback_data="back_menu")],
     ])
 
 
@@ -1359,12 +1399,12 @@ WELCOME_TEXT = (
 
 RULES_TEXT = (
     "RANDOM UNDERGROUND // RULES\n\n"
-    "♡ Pakai satu hashtag yang tersedia di awal pesan.\n"
-    "♡ Jangan spam atau mengirim pesan berulang.\n"
-    "♡ Jangan kirim data pribadi orang lain.\n"
-    "♡ Dilarang kata-kata kasar/jorok dan serangan pribadi.\n"
-    "♡ Hormati penghuni lain dan jaga kolom komentar.\n"
-    "♡ Komentar terbuka untuk semua orang, tapi tetap akan dimoderasi.\n\n"
+    "\u25aa Satu hashtag di awal pesan.\n"
+    "\u25aa Jangan spam. Jangan ulang-ulang.\n"
+    "\u25aa Data pribadi orang lain: jangan.\n"
+    "\u25aa Kata kasar dan serangan pribadi: jangan.\n"
+    "\u25aa Hormati penghuni lain.\n"
+    "\u25aa Komentar terbuka, tapi dimoderasi.\n\n"
     "AVAILABLE TAGS\n"
     "#mutual  #curhat  #random  #gabut\n"
     "#confess  #ask  #salty  #want"
@@ -1403,7 +1443,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_subscribed(user.id, context):
         await update.message.reply_text(
             "⟡ RANDOM UNDERGROUND\n\n"
-            "Subscribe channel RANDOM UNDERGROUND dulu sebelum kirim pesan yaa.\n\n"
+            "Subscribe channel RANDOM UNDERGROUND dulu sebelum kirim pesan.\n\n"
             "Kalau sudah subscribe, tekan CEK SUBSCRIBE.",
             reply_markup=subscribe_menu(),
         )
@@ -1411,7 +1451,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"{WELCOME_TEXT}\n\n"
-        f"🧸 Sisa kuota: {quota_text(user.id)}",
+        f"▪ Sisa kuota: {quota_text(user.id)}",
         reply_markup=main_menu(user.id),
     )
 
@@ -1419,7 +1459,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def event_cancel_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("❌ BATAL BUAT EVENT", callback_data="owner:event_cancel")]
+        [InlineKeyboardButton("✕ BATAL BUAT EVENT", callback_data="owner:event_cancel")]
     ])
 
 
@@ -1428,23 +1468,23 @@ def owner_event_menu():
     if event:
         name = event["event_name"] or f"Event #{event['id']}"
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏆 LIHAT RANKING", callback_data="owner:event_rank")],
-            [InlineKeyboardButton("📢 INFO EVENT", callback_data="owner:event_info")],
-            [InlineKeyboardButton("🛑 STOP EVENT", callback_data="owner:event_stop")],
-            [InlineKeyboardButton("↩️ OWNER PANEL", callback_data="owner_panel")],
+            [InlineKeyboardButton("◆ LIHAT RANKING", callback_data="owner:event_rank")],
+            [InlineKeyboardButton("◆ INFO EVENT", callback_data="owner:event_info")],
+            [InlineKeyboardButton("◆ STOP EVENT", callback_data="owner:event_stop")],
+            [InlineKeyboardButton("← OWNER PANEL", callback_data="owner_panel")],
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ BUAT EVENT", callback_data="owner:event_create")],
-        [InlineKeyboardButton("📊 EVENT TERAKHIR", callback_data="owner:event_last")],
-        [InlineKeyboardButton("↩️ OWNER PANEL", callback_data="owner_panel")],
+        [InlineKeyboardButton("◆ BUAT EVENT", callback_data="owner:event_create")],
+        [InlineKeyboardButton("◆ EVENT TERAKHIR", callback_data="owner:event_last")],
+        [InlineKeyboardButton("← OWNER PANEL", callback_data="owner_panel")],
     ])
 
 
 def owner_panel_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎉 EVENT", callback_data="owner_event")],
+        [InlineKeyboardButton("◆ EVENT", callback_data="owner_event")],
         [InlineKeyboardButton("⚡ FLASH EVENT", callback_data="owner:flash")],
-        [InlineKeyboardButton("↩️ MENU", callback_data="back_menu")],
+        [InlineKeyboardButton("← MENU", callback_data="back_menu")],
     ])
 
 
@@ -1452,8 +1492,8 @@ def format_event_settings(event):
     name = event["event_name"] or f"Event #{event['id']}"
     winners = event["winner_count"] or 3
     return (
-        f"🎉 {name}\n\n"
-        f"🏆 Pemenang: {winners} orang\n"
+        f"{name}\n\n"
+        f"▪ Pemenang: {winners} orang\n"
         f"⏰ {format_event_end(event)}\n\n"
         "Skor event dimulai dari 0 dan terpisah dari leaderboard biasa."
     )
@@ -1469,24 +1509,24 @@ def format_event_result(event):
 
     if not rows:
         return (
-            f"🏁 {name} SELESAI!\n\n"
-            "Belum ada peserta yang mendapatkan poin. 🫧"
+            f"{name} // SELESAI\n\n"
+            "Belum ada peserta yang mendapatkan poin."
         )
 
-    medals = ["🥇", "🥈", "🥉"]
+    medals = ["01", "02", "03"]
     winner_lines = []
     for i, row in enumerate(rows[:winners], 1):
         uname = f"@{row['username']}" if row["username"] else (row["first_name"] or f"User {row['user_id']}")
         winner_lines.append(f"{medals[i-1] if i <= 3 else f'{i}.'} {uname} — {row['points']} poin")
 
     lines = [
-        f"🏁 {name} SELESAI!",
+        f"{name} // SELESAI",
         "",
-        "🎉 SELAMAT KEPADA PEMENANG!",
+        "SELAMAT KEPADA PEMENANG",
         "",
         *winner_lines,
         "",
-        "📊 HASIL RANKING",
+        "HASIL RANKING",
     ]
     for i, row in enumerate(rows, 1):
         uname = f"@{row['username']}" if row["username"] else (row["first_name"] or f"User {row['user_id']}")
@@ -1500,14 +1540,14 @@ async def announce_event_start(bot, event):
     winners = int(event["winner_count"] or 3)
     duration = "tanpa batas waktu" if not event["ends_at"] else format_event_end(event)
     text = (
-        "🎉 EVENT RANDOM UNDERGROUND DIMULAI! 🎉\n\n"
-        f"🏆 {name}\n"
+        "EVENT RANDOM UNDERGROUND DIMULAI\n\n"
+        f"{name}\n"
         f"⏰ Durasi: {duration}\n"
-        f"🥇 Pemenang: {winners} orang\n\n"
-        "Skor event dimulai dari 0 untuk semua peserta. 💗\n\n"
-        f"💌 Menfess valid = +{POINT_PER_MENFESS} poin\n"
-        f"💬 Komentar valid = +{POINT_PER_COMMENT} poin\n\n"
-        "Ranking event bisa dilihat kapan saja lewat menu 🏆 LEADERBOARD."
+        f"▪ Pemenang: {winners} orang\n\n"
+        "Skor event dimulai dari 0 untuk semua peserta.\n\n"
+        f"▪ Menfess valid = +{POINT_PER_MENFESS} poin\n"
+        f"▪ Komentar valid = +{POINT_PER_COMMENT} poin\n\n"
+        "Ranking event bisa dilihat kapan saja lewat menu LEADERBOARD."
     )
     await bot.send_message(CHANNEL_USERNAME, text)
 
@@ -1532,7 +1572,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back_menu":
         await query.message.reply_text(
-            f"{WELCOME_TEXT}\n\n🧸 Sisa kuota: {quota_text(user.id)}",
+            f"{WELCOME_TEXT}\n\n▪ Sisa kuota: {quota_text(user.id)}",
             reply_markup=main_menu(user.id),
         )
         return
@@ -1540,14 +1580,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "check_sub":
         if await is_subscribed(user.id, context):
             await query.message.reply_text(
-                f"Yay, sudah terdeteksi! 🎀\n\n"
-                f"🧸 Sisa kuota: {quota_text(user.id)}",
+                f"Akses terverifikasi.\n\n"
+                f"▪ Sisa kuota: {quota_text(user.id)}",
                 reply_markup=main_menu(user.id),
             )
         else:
             await query.message.reply_text(
-                "🫧 Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
-                "Subscribe dulu, lalu tekan CEK SUBSCRIBE yaa.",
+                "✕ Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
+                "Subscribe dulu, lalu tekan CEK SUBSCRIBE.",
                 reply_markup=subscribe_menu(),
             )
         return
@@ -1555,14 +1595,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "check_discussion_join":
         if await is_discussion_member(user.id, context):
             await query.message.reply_text(
-                "Yay, kamu sudah join grup diskusi RANDOM UNDERGROUND! 💗\n\n"
+                "Kamu sudah join grup diskusi RANDOM UNDERGROUND.\n\n"
                 "Sekarang kamu sudah bisa ikut berkomentar.",
                 reply_markup=main_menu(user.id),
             )
         else:
             await query.message.reply_text(
-                "🫧 Kamu belum join grup diskusi RANDOM UNDERGROUND.\n\n"
-                "Join dulu, lalu tekan CEK LAGI yaa.",
+                "✕ Kamu belum join grup diskusi RANDOM UNDERGROUND.\n\n"
+                "Join dulu, lalu tekan CEK LAGI.",
                 reply_markup=discussion_join_menu(),
             )
         return
@@ -1582,7 +1622,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             profile_badges_text(target_id),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("↩️ PROFILE", callback_data=f"profile:self" if target_id == user.id else "back_menu")]
+                [InlineKeyboardButton("← PROFILE", callback_data=f"profile:self" if target_id == user.id else "back_menu")]
             ]),
         )
         return
@@ -1591,7 +1631,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_owner(user.id):
             return
         await query.message.reply_text(
-            "⚙️ OWNER PANEL\n\nPilih pengaturan:",
+            "⚙ OWNER PANEL\n\nPilih pengaturan:",
             reply_markup=owner_panel_menu(),
         )
         return
@@ -1602,12 +1642,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         event = get_active_event()
         if event:
             await query.message.reply_text(
-                f"🎉 EVENT AKTIF\n\n{format_event_settings(event)}",
+                f"EVENT AKTIF\n\n{format_event_settings(event)}",
                 reply_markup=owner_event_menu(),
             )
         else:
             await query.message.reply_text(
-                "🎉 EVENT MANAGER\n\nBelum ada event aktif.",
+                "EVENT MANAGER\n\nBelum ada event aktif.",
                 reply_markup=owner_event_menu(),
             )
         return
@@ -1619,7 +1659,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("event_name", None)
         context.user_data.pop("event_duration", None)
         await query.message.reply_text(
-            "🎉 BUAT EVENT\n\nKirim nama event-nya dulu yaa.",
+            "BUAT EVENT\n\nKirim nama event-nya dulu.",
             reply_markup=event_cancel_menu(),
         )
         return
@@ -1631,7 +1671,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("event_name", None)
         context.user_data.pop("event_duration", None)
         await query.message.reply_text(
-            "❌ Pembuatan event dibatalkan.\n\nTidak ada event baru yang dibuat.",
+            "✕ Pembuatan event dibatalkan.\n\nTidak ada event baru yang dibuat.",
             reply_markup=owner_event_menu(),
         )
         return
@@ -1641,11 +1681,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         event = stop_event()
         if not event:
-            await query.message.reply_text("🫧 Tidak ada event yang sedang aktif.")
+            await query.message.reply_text("✕ Tidak ada event yang sedang aktif.")
             return
         await announce_event_end(context.bot, event)
         await query.message.reply_text(
-            "🏁 Event selesai. Hasil akhirnya sudah diumumkan di base.",
+            "Event selesai. Hasil akhirnya sudah diumumkan di base.",
             reply_markup=owner_event_menu(),
         )
         return
@@ -1664,7 +1704,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         event = get_active_event()
         if not event:
-            await query.message.reply_text("🫧 Tidak ada event aktif.", reply_markup=owner_event_menu())
+            await query.message.reply_text("✕ Tidak ada event aktif.", reply_markup=owner_event_menu())
             return
         await query.message.reply_text(
             format_event_settings(event),
@@ -1679,7 +1719,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         event = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 1").fetchone()
         conn.close()
         if not event:
-            await query.message.reply_text("🫧 Belum ada event.", reply_markup=owner_event_menu())
+            await query.message.reply_text("✕ Belum ada event.", reply_markup=owner_event_menu())
         else:
             await query.message.reply_text(
                 format_event_result(event),
@@ -1695,10 +1735,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "community:qotd":
         q=QOTD[int(time.strftime("%j")) % len(QOTD)]
-        await query.message.reply_text("💭 QUESTION OF THE DAY\n\n"+q+"\n\n👇 Jawab di komentar base yaa!", reply_markup=community_menu())
+        await query.message.reply_text("QUESTION OF THE DAY\n\n"+q+"\n\n▸ Jawab di komentar base.", reply_markup=community_menu())
         return
     if data == "community:title":
-        await query.message.reply_text(f"👑 TITLE KAMU\n\n{get_user_title(user.id)}", reply_markup=community_menu())
+        await query.message.reply_text(f"TITLE KAMU\n\n{get_user_title(user.id)}", reply_markup=community_menu())
         return
     if data == "community:mvp":
         await query.message.reply_text(weekly_mvp_text(), reply_markup=community_menu())
@@ -1720,7 +1760,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_owner(user.id): return
         active=get_active_event()
         if active:
-            await query.message.reply_text("🫧 Hentikan event aktif dulu sebelum membuat Flash Event.", reply_markup=owner_panel_menu())
+            await query.message.reply_text("✕ Hentikan event aktif dulu sebelum membuat Flash Event.", reply_markup=owner_panel_menu())
             return
         event=start_event("⚡ FLASH EVENT",2/24,3)
         await announce_event_start(context.bot,event)
@@ -1757,15 +1797,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "send_menfess":
         if not await is_subscribed(user.id, context):
             await query.message.reply_text(
-                "🫧 Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
-                "Subscribe dulu sebelum kirim pesan yaa.",
+                "✕ Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
+                "Subscribe dulu sebelum kirim pesan.",
                 reply_markup=subscribe_menu(),
             )
             return
 
         if not is_owner(user.id) and get_used_count(user.id) >= MAX_SENDS:
             await query.message.reply_text(
-                "🫧 Kuota pesan kamu sudah habis.\n\n"
+                "✕ Kuota pesan kamu sudah habis.\n\n"
                 f"Maksimal {MAX_SENDS} pesan dalam 24 jam."
             )
             return
@@ -1788,17 +1828,17 @@ async def start_comment_reply(update, context, user, data):
     try:
         db_id = int(data.split(":", 1)[1])
     except (ValueError, IndexError):
-        await query.message.reply_text("🫧 Komentar tidak ditemukan.")
+        await query.message.reply_text("✕ Komentar tidak ditemukan.")
         return
 
     comment = get_discussion_message_by_db_id(db_id)
     if not comment:
-        await query.message.reply_text("🫧 Komentar tidak ditemukan.")
+        await query.message.reply_text("✕ Komentar tidak ditemukan.")
         return
 
     menfess = get_menfess(comment["menfess_id"])
     if not menfess:
-        await query.message.reply_text("🫧 Postingan tidak ditemukan.")
+        await query.message.reply_text("✕ Postingan tidak ditemukan.")
         return
 
     allowed = (
@@ -1808,7 +1848,7 @@ async def start_comment_reply(update, context, user, data):
 
     if not allowed:
         await query.message.reply_text(
-            "🫧 Balasan ini bukan untuk akun kamu."
+            "✕ Balasan ini bukan untuk akun kamu."
         )
         return
 
@@ -1816,7 +1856,7 @@ async def start_comment_reply(update, context, user, data):
     context.user_data["waiting_message"] = False
 
     await query.message.reply_text(
-        "Balas komentar yuk! 🎀\n\n"
+        "Balas komentar.\n\n"
         "Kirim balasan kamu sekarang.\n"
         "Balasan akan dikirim anonim lewat bot."
     )
@@ -1844,7 +1884,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if step == "name":
             if not raw or len(raw) > 80:
                 await update.message.reply_text(
-                    "🫧 Nama event 1–80 karakter yaa.",
+                    "✕ Nama event 1–80 karakter.",
                     reply_markup=event_cancel_menu(),
                 )
                 return
@@ -1863,14 +1903,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     raise ValueError
             except ValueError:
                 await update.message.reply_text(
-                    "🫧 Kirim angka 1–365 yaa.",
+                    "✕ Kirim angka 1–365.",
                     reply_markup=event_cancel_menu(),
                 )
                 return
             context.user_data["event_duration"] = duration
             context.user_data["event_create_step"] = "winners"
             await update.message.reply_text(
-                "🏆 Berapa orang yang jadi pemenang?\n\n"
+                "Berapa orang yang jadi pemenang?\n\n"
                 "Kirim angka 1–20.",
                 reply_markup=event_cancel_menu(),
             )
@@ -1883,7 +1923,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     raise ValueError
             except ValueError:
                 await update.message.reply_text(
-                    "🫧 Jumlah pemenang harus 1–20.",
+                    "✕ Jumlah pemenang harus 1–20.",
                     reply_markup=event_cancel_menu(),
                 )
                 return
@@ -1896,7 +1936,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("event_create_step", None)
             await announce_event_start(context.bot, event)
             await update.message.reply_text(
-                "🚀 Event berhasil dimulai dan pengumumannya sudah dikirim ke base!",
+                "Event dimulai. Pengumuman sudah dikirim ke base.",
                 reply_markup=owner_event_menu(),
             )
             return
@@ -1910,7 +1950,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise ValueError
         except ValueError:
             await update.message.reply_text(
-                "🫧 Kirim angka 1–365 saja yaa. Contoh: 14"
+                "✕ Kirim angka 1–365 saja. Contoh: 14"
             )
             return
 
@@ -1922,8 +1962,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["waiting_message"] = False
         context.user_data["waiting_comment_reply"] = None
         await update.message.reply_text(
-            "🫧 Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
-            "Subscribe dulu sebelum mengirim pesan yaa.",
+            "✕ Kamu belum subscribe channel RANDOM UNDERGROUND.\n\n"
+            "Subscribe dulu sebelum mengirim pesan.",
             reply_markup=subscribe_menu(),
         )
         return
@@ -1938,7 +1978,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_owner(user.id) and get_used_count(user.id) >= MAX_SENDS:
             context.user_data["waiting_message"] = False
             await update.message.reply_text(
-                "🫧 Kuota pesan kamu sudah habis.\n\n"
+                "✕ Kuota pesan kamu sudah habis.\n\n"
                 f"Maksimal {MAX_SENDS} pesan dalam 24 jam."
             )
             return
@@ -1948,7 +1988,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "⟡ Tekan KIRIM PESAN dulu yaa.",
+        "⟡ Tekan KIRIM PESAN dulu.",
         reply_markup=main_menu(user.id),
     )
 
@@ -1958,12 +1998,12 @@ async def process_private_comment_reply(update, context, db_id):
     comment = get_discussion_message_by_db_id(db_id)
 
     if not comment:
-        await update.message.reply_text("🫧 Komentar sudah tidak ditemukan.")
+        await update.message.reply_text("✕ Komentar sudah tidak ditemukan.")
         return
 
     menfess = get_menfess(comment["menfess_id"])
     if not menfess:
-        await update.message.reply_text("🫧 Postingan sudah tidak ditemukan.")
+        await update.message.reply_text("✕ Postingan sudah tidak ditemukan.")
         return
 
     allowed = (
@@ -1971,13 +2011,13 @@ async def process_private_comment_reply(update, context, db_id):
         or comment["author_user_id"] == user.id
     )
     if not allowed:
-        await update.message.reply_text("🫧 Kamu tidak bisa membalas komentar ini.")
+        await update.message.reply_text("✕ Kamu tidak bisa membalas komentar ini.")
         return
 
     text = update.message.text or update.message.caption or ""
     if contains_bad_word(text):
         await update.message.reply_text(
-            "🫧 Balasan tidak dikirim karena mengandung kata yang tidak diperbolehkan."
+            "✕ Balasan tidak dikirim karena mengandung kata yang tidak diperbolehkan."
         )
         return
 
@@ -2002,7 +2042,7 @@ async def process_private_comment_reply(update, context, db_id):
             )
         else:
             await update.message.reply_text(
-                "Balasan untuk sekarang berupa teks atau foto + caption yaa."
+                "Balasan untuk sekarang berupa teks atau foto + caption."
             )
             return
 
@@ -2015,15 +2055,16 @@ async def process_private_comment_reply(update, context, db_id):
             content=text,
         )
         record_activity(user.id, "comment", source_id=db_id)
-        add_event_points(user.id, comment=1, menfess_id=db_id) if event_activity_is_valid(update.message.text or update.message.caption or "", "comment") else None
+        if event_activity_is_valid(update.message.text or update.message.caption or "", "comment"):
+            add_event_points(user.id, comment=1, menfess_id=db_id)
 
         await update.message.reply_text(
-            "Balasan kamu sudah dikirim secara anonim. 🎀"
+            "Balasan kamu sudah dikirim secara anonim."
         )
     except Exception:
         logging.exception("Gagal mengirim balasan anonim")
         await update.message.reply_text(
-            "🫧 Balasannya belum bisa dikirim.\n\n"
+            "✕ Balasannya belum bisa dikirim.\n\n"
             "Pastikan bot admin di channel dan grup komentar."
         )
 
@@ -2040,7 +2081,7 @@ async def process_new_menfess(update, context):
 
     if contains_bad_word(content):
         await message.reply_text(
-            "🫧 Pesan belum dikirim.\n\n"
+            "✕ Pesan belum dikirim.\n\n"
             "Pesan mengandung kata yang tidak diperbolehkan. "
             "Coba ubah kata-katanya lalu kirim lagi."
         )
@@ -2049,7 +2090,7 @@ async def process_new_menfess(update, context):
     match = re.match(r"^\s*(#[A-Za-z0-9_]+)(?:\s|$)", content)
     if not match:
         await message.reply_text(
-            "🫧 Pesan tidak dikirim.\n\n"
+            "✕ Pesan tidak dikirim.\n\n"
             "Wajib memakai satu hashtag di awal pesan.\n"
             "Contoh: #random hari ini gabut banget."
         )
@@ -2058,7 +2099,7 @@ async def process_new_menfess(update, context):
     hashtags = re.findall(r"(?<!\\w)#[A-Za-z0-9_]+", content)
     if len(hashtags) != 1:
         await message.reply_text(
-            "🫧 Pesan tidak dikirim.\n\n"
+            "✕ Pesan tidak dikirim.\n\n"
             "Gunakan tepat satu hashtag yang sesuai dengan isi pesan."
         )
         return
@@ -2066,7 +2107,7 @@ async def process_new_menfess(update, context):
     hashtag = match.group(1).lower()
     if hashtag not in VALID_HASHTAGS:
         await message.reply_text(
-            "🫧 Hashtag tidak tersedia.\n\n"
+            "✕ Hashtag tidak tersedia.\n\n"
             "Pakai salah satu:\n" + "  ".join(VALID_HASHTAGS.keys())
         )
         return
@@ -2085,20 +2126,21 @@ async def process_new_menfess(update, context):
             )
         else:
             await message.reply_text(
-                "Boleh kirim teks atau foto + caption yaa. 🎀"
+                "Boleh kirim teks atau foto + caption."
             )
             return
 
         menfess_id = create_menfess(user.id, sent.message_id, content)
         add_send_log(user.id)
         record_activity(user.id, "menfess")
-        add_event_points(user.id, menfess=1) if event_activity_is_valid(message.text or message.caption or "", "menfess") else None
+        if event_activity_is_valid(message.text or message.caption or "", "menfess"):
+            add_event_points(user.id, menfess=1)
 
         menfess = get_menfess(menfess_id)
 
         await message.reply_text(
-            "💗 Menfess kamu terkirim!\n\n"
-            "Kalau mau lihat postingannya, tekan tombol di bawah yaa.",
+            "✓ Menfess kamu terkirim!\n\n"
+            "Kalau mau lihat postingannya, tekan tombol di bawah.",
             reply_markup=view_menfess_button(menfess),
         )
 
@@ -2112,7 +2154,7 @@ async def process_new_menfess(update, context):
     except Exception:
         logging.exception("Gagal mengirim menfess")
         await message.reply_text(
-            "🫧 Pesan belum berhasil dikirim.\n\n"
+            "✕ Pesan belum berhasil dikirim.\n\n"
             "Pastikan bot sudah menjadi admin di channel RANDOM UNDERGROUND."
         )
 
@@ -2197,7 +2239,8 @@ async def discussion_comment_handler(update, context):
         content=(message.text or message.caption or ""),
     )
     record_activity(message.from_user.id, "comment", source_id=message.message_id)
-    add_event_points(message.from_user.id, comment=1, menfess_id=menfess["id"]) if event_activity_is_valid(message.text or message.caption or "", "comment") else None
+    if event_activity_is_valid(message.text or message.caption or "", "comment"):
+        add_event_points(message.from_user.id, comment=1, menfess_id=menfess["id"])
 
     # Notifikasi hanya untuk pihak yang relevan.
     target_user_id = (
@@ -2212,7 +2255,7 @@ async def discussion_comment_handler(update, context):
     preview = (
         message.text
         or message.caption
-        or ("📷 Foto" if message.photo else "Pesan baru")
+        or ("Foto" if message.photo else "Pesan baru")
     )
     preview = preview.strip()
     if len(preview) > 250:
@@ -2227,8 +2270,8 @@ async def discussion_comment_handler(update, context):
 
         await context.bot.send_message(
             target_user_id,
-            f"💗 Ada balasan baru!\n\n"
-            f"💬 {preview}\n\n"
+            f"✓ Ada balasan baru!\n\n"
+            f"{preview}\n\n"
             "Identitas pengirim tetap anonim.",
             reply_markup=reply_comment_button(comment_db["id"]),
         )
@@ -2277,7 +2320,7 @@ def owner_only(func):
         user = update.effective_user
         if not user or not is_owner(user.id):
             if update.message:
-                await update.message.reply_text("🫧 Bagian ini khusus owner.")
+                await update.message.reply_text("✕ Bagian ini khusus owner.")
             return
         return await func(update, context)
     return wrapper
@@ -2288,8 +2331,8 @@ async def event_start_command(update, context):
     # Backward-compatible command; the normal flow is now through buttons.
     context.user_data["event_create_step"] = "name"
     await update.message.reply_text(
-        "🎉 BUAT EVENT\n\n"
-        "Kirim nama event-nya dulu yaa.",
+        "BUAT EVENT\n\n"
+        "Kirim nama event-nya dulu.",
         reply_markup=event_cancel_menu(),
     )
 
@@ -2298,17 +2341,17 @@ async def event_start_command(update, context):
 async def event_stop_command(update, context):
     event = stop_event()
     if not event:
-        await update.message.reply_text("🫧 Tidak ada event yang sedang aktif.")
+        await update.message.reply_text("✕ Tidak ada event yang sedang aktif.")
         return
     await announce_event_end(context.bot, event)
-    await update.message.reply_text("🏁 Event sudah dihentikan dan hasil akhirnya diumumkan di base.")
+    await update.message.reply_text("Event sudah dihentikan dan hasil akhirnya diumumkan di base.")
 
 
 @owner_only
 async def event_status_command(update, context):
     event = get_active_event()
     if not event:
-        await update.message.reply_text("🫧 Tidak ada event yang sedang aktif.")
+        await update.message.reply_text("✕ Tidak ada event yang sedang aktif.")
         return
     await update.message.reply_text(
         format_event_settings(event),
@@ -2324,7 +2367,7 @@ async def event_leaderboard_command(update, context):
         event = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 1").fetchone()
         conn.close()
     if not event:
-        await update.message.reply_text("🫧 Belum ada event.")
+        await update.message.reply_text("✕ Belum ada event.")
         return
     await update.message.reply_text(
         format_public_event_leaderboard(),
@@ -2335,8 +2378,8 @@ async def event_leaderboard_command(update, context):
 @owner_only
 async def event_help_command(update, context):
     await update.message.reply_text(
-        "🎉 EVENT\n\n"
-        "Buka /start → ⚙️ OWNER PANEL → 🎉 EVENT.\n\n"
+        "EVENT\n\n"
+        "Buka /start → OWNER CONTROL → EVENT.\n\n"
         "Di sana kamu bisa membuat, melihat, dan menghentikan event."
     )
 
@@ -2351,7 +2394,7 @@ async def community_watcher(application):
                 conn=db(); sent=conn.execute("SELECT value FROM community_meta WHERE key=?",(f"qotd:{key}",)).fetchone()
                 if not sent:
                     q=QOTD[int(time.strftime("%j",local)) % len(QOTD)]
-                    await application.bot.send_message(CHANNEL_USERNAME,"💭 QUESTION OF THE DAY\\n\\n"+q+"\\n\\n👇 Jawab di komentar yaa!")
+                    await application.bot.send_message(CHANNEL_USERNAME,"QUESTION OF THE DAY\\n\\n"+q+"\\n\\n▸ Jawab di komentar.")
                     conn.execute("INSERT OR REPLACE INTO community_meta VALUES (?,?)",(f"qotd:{key}","sent")); conn.commit()
                 conn.close()
             # If base has been quiet for 2h, send one prompt, max once per 6h.
@@ -2359,7 +2402,7 @@ async def community_watcher(application):
             cool=conn.execute("SELECT value FROM community_meta WHERE key='quiet:last'").fetchone(); last_prompt=int(cool["value"]) if cool else 0
             conn.close()
             if now-last>=7200 and now-last_prompt>=21600:
-                await application.bot.send_message(CHANNEL_USERNAME,"🚨 WOI BASE KOK DIAM 😭\\n\\nMending WiFi gratis seumur hidup atau makanan gratis seumur hidup? 👀\\n\\n👇 Bahas di komentar!")
+                await application.bot.send_message(CHANNEL_USERNAME,"BASE SEPI\\n\\nMending WiFi gratis seumur hidup atau makanan gratis seumur hidup?\\n\\n▸ Bahas di komentar.")
                 conn=db(); conn.execute("INSERT OR REPLACE INTO community_meta VALUES ('quiet:last',?)",(str(now),)); conn.commit(); conn.close()
         except Exception:
             logging.exception("Community watcher error")
@@ -2376,7 +2419,8 @@ async def event_watcher(application):
                     await announce_event_end(application.bot, ended)
         except Exception:
             logging.exception("Event watcher error")
-        await asyncio.sleep(1)
+        # 30 detik cukup presisi untuk mengakhiri event; hindari polling DB tiap detik.
+        await asyncio.sleep(30)
 
 
 @owner_only
@@ -2386,7 +2430,7 @@ async def event_cancel_command(update, context):
     context.user_data.pop("event_duration", None)
     context.user_data.pop("waiting_event_duration", None)
     await update.message.reply_text(
-        "❌ Pembuatan event dibatalkan. Tidak ada event baru yang dibuat.",
+        "✕ Pembuatan event dibatalkan. Tidak ada event baru yang dibuat.",
         reply_markup=owner_event_menu(),
     )
 
@@ -2394,10 +2438,34 @@ async def event_cancel_command(update, context):
 # STARTUP / MAIN
 # ============================================================
 
+async def creative_files_janitor():
+    """Hapus file upload/render creative yang lebih tua dari 1 jam agar disk tidak penuh."""
+    from pathlib import Path
+    base = Path(os.getenv("RANDOMUNDERGROUND_DATA_DIR", ".")).resolve()
+    dirs = [base / "creative_uploads", base / "creative_renders"]
+    max_age = 3600
+    while True:
+        try:
+            now = time.time()
+            for d in dirs:
+                if not d.exists():
+                    continue
+                for p in d.iterdir():
+                    try:
+                        if p.is_file() and now - p.stat().st_mtime > max_age:
+                            p.unlink(missing_ok=True)
+                    except OSError:
+                        continue
+        except Exception:
+            logging.exception("Creative janitor error")
+        await asyncio.sleep(1800)
+
+
 async def post_init(application):
     await load_chat_ids(application)
     application.create_task(event_watcher(application))
     application.create_task(community_watcher(application))
+    application.create_task(creative_files_janitor())
 
 
 async def error_handler(update, context):
@@ -2477,11 +2545,15 @@ def main():
         format="%(asctime)s - %(levelname)s - %(message)s",
         level=logging.INFO,
     )
+    # httpx mencatat URL lengkap di level INFO, termasuk token bot di path.
+    # Naikkan ke WARNING supaya token tidak bocor ke log container.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-    if not BOT_TOKEN or BOT_TOKEN == "ISI_TOKEN_BOT_KAMU_DI_SINI":
+    if not BOT_TOKEN:
         raise RuntimeError(
-            "BOT_TOKEN belum diisi. Set RANDOMUNDERGROUND_BOT_TOKEN "
-            "atau isi BOT_TOKEN di file."
+            "BOT_TOKEN belum diisi. Set environment variable "
+            "RANDOMUNDERGROUND_BOT_TOKEN (jangan hardcode di source)."
         )
 
     init_db()
@@ -2527,14 +2599,14 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_error_handler(error_handler)
 
-    print("🤖 RANDOM UNDERGROUND BOT AKTIF!")
-    print("💌 Menfess anonim aktif.")
-    print("💬 Komentar + reply anonim aktif untuk semua orang.")
-    print("🏆 Leaderboards: ALL-TIME / WEEKLY / MONTHLY + EVENT.")
-    print("🏆 Event + leaderboard aktif.")
-    print("✨ Community: missions, QOTD, titles, MVP, spotlight, mystery box, trending aktif.")
-    print("🫧 Moderasi kata terlarang aktif.")
-    print("📡 Menunggu pesan...")
+    print("RANDOM UNDERGROUND // ONLINE")
+    print("Menfess anonim aktif.")
+    print("Komentar + reply anonim aktif untuk semua orang.")
+    print("Leaderboards: ALL-TIME / WEEKLY / MONTHLY + EVENT.")
+    print("Event + leaderboard aktif.")
+    print("Community: missions, QOTD, titles, MVP, spotlight, mystery box, trending aktif.")
+    print("✕ Moderasi kata terlarang aktif.")
+    print("Menunggu pesan...")
 
     app.run_polling()
 

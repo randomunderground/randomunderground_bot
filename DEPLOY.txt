@@ -1,0 +1,111 @@
+================================================================
+RANDOM UNDERGROUND BOT - CARA DEPLOY / RESTART
+================================================================
+
+PRINSIP
+  Token TIDAK PERNAH masuk source, git, atau image Docker.
+  Token hanya ada di .envo (chmod 600, gitignored + dockerignored)
+  dan di-inject ke container saat runtime lewat -e.
+
+  Database TIDAK disimpan di dalam container. .dockerignore
+  mengecualikan *.db, jadi DB wajib lewat volume mount. Mode WAL
+  butuh file -wal/-shm sedirektori dengan DB, karena itu yang
+  di-mount adalah DIREKTORI, bukan file tunggal.
+
+----------------------------------------------------------------
+1. SIAPKAN TOKEN
+----------------------------------------------------------------
+  File .envo di root project, satu baris:
+
+      RANDOMUNDERGROUND_BOT_TOKEN=<token_dari_BotFather>
+
+  chmod 600 .envo
+  JANGAN commit file ini. JANGAN hardcode token di .py manapun.
+
+----------------------------------------------------------------
+2. SIAPKAN DIREKTORI DATA
+----------------------------------------------------------------
+  Container jalan sebagai non-root (uid 10001), jadi direktori
+  data harus dimiliki uid tersebut:
+
+      mkdir -p data
+      chown -R 10001:10001 data
+
+  Isi direktori data/ saat runtime:
+      randomunderground.db          <- database utama
+      randomunderground.db-wal/-shm <- file WAL (otomatis)
+      creative_uploads/             <- upload sementara (dibersihkan janitor)
+      creative_renders/             <- hasil render (dibersihkan janitor)
+      jj_templates/                 <- template JJ maker
+
+----------------------------------------------------------------
+3. BUILD
+----------------------------------------------------------------
+      docker build -t randomunderground-bot:latest .
+
+  Verifikasi image bersih dari secret:
+      docker run --rm --entrypoint sh randomunderground-bot:latest \
+        -c 'grep -rlE "[0-9]{8,10}:AA" /app 2>/dev/null || echo BERSIH'
+
+----------------------------------------------------------------
+4. JALANKAN
+----------------------------------------------------------------
+      set -a && . ./.envo && set +a
+      docker run -d --name my-randomunderground-bot \
+        --restart unless-stopped \
+        -e RANDOMUNDERGROUND_BOT_TOKEN="$RANDOMUNDERGROUND_BOT_TOKEN" \
+        -e RANDOMUNDERGROUND_DATA_DIR=/app/data \
+        -v "$PWD/data:/app/data" \
+        randomunderground-bot:latest
+
+  Catatan: -v butuh path absolut. Sesuaikan bila project dipindah.
+
+----------------------------------------------------------------
+5. RESTART SETELAH UBAH KODE
+----------------------------------------------------------------
+      docker build -t randomunderground-bot:latest .
+      docker stop my-randomunderground-bot
+      docker rm   my-randomunderground-bot
+      # lalu ulangi langkah 4
+
+  Aman menghapus container: seluruh data ada di host lewat mount.
+  TANPA mount, "docker rm" akan MENGHAPUS DATABASE.
+
+----------------------------------------------------------------
+6. VERIFIKASI SEHAT
+----------------------------------------------------------------
+      docker ps --filter name=my-randomunderground-bot
+      docker logs my-randomunderground-bot | tail -20
+
+  Yang diharapkan: "Application started", BOT_USER_ID / CHANNEL_CHAT_ID /
+  DISCUSSION_CHAT_ID terisi, DISCUSSION BOT STATUS=administrator.
+
+  Cek token benar-benar hidup:
+      docker exec my-randomunderground-bot python3 -c "
+      import os,json,urllib.request
+      t=os.environ['RANDOMUNDERGROUND_BOT_TOKEN']
+      print(json.load(urllib.request.urlopen(f'https://api.telegram.org/bot{t}/getMe'))['result']['username'])"
+
+  Pastikan token TIDAK muncul di log (harus 0):
+      docker logs my-randomunderground-bot 2>&1 | grep -cE "[0-9]{8,10}:AA"
+
+----------------------------------------------------------------
+7. BACKUP DATABASE
+----------------------------------------------------------------
+  Jangan cp file DB saat bot jalan (WAL bisa bikin salinan tidak
+  konsisten). Pakai API backup SQLite:
+
+      docker exec my-randomunderground-bot python3 -c "
+      import sqlite3
+      s=sqlite3.connect('/app/data/randomunderground.db')
+      d=sqlite3.connect('/app/data/backup.db'); s.backup(d); d.close(); s.close()"
+      docker cp my-randomunderground-bot:/app/data/backup.db ./db-$(date +%F).db
+
+----------------------------------------------------------------
+8. ROTASI TOKEN
+----------------------------------------------------------------
+  1. @BotFather -> /revoke -> pilih bot -> dapat token baru
+  2. Ganti isi .envo dengan token baru
+  3. Ulangi langkah 5 (rebuild tidak wajib, cukup stop/rm/run)
+  Token lama langsung mati begitu di-revoke.
+================================================================
