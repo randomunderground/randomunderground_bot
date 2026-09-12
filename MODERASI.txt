@@ -276,7 +276,10 @@ MASALAH YANG DISELESAIKAN
   - Belum ada mode approval (menfess masuk antrean sebelum tayang).
   - Belum ada role moderator; semua masih owner-only.
   - Filter kata masih daftar statis; belum ada deteksi link,
-    nomor HP, atau normalisasi leetspeak.
+    nomor HP, atau normalisasi leetspeak. Padahal RULES_TEXT sudah
+    menyatakan jualan/promosi/judi/link afiliasi akan dihapus, jadi
+    untuk sekarang itu ditegakkan manual dari log channel dan
+    laporan member, bukan otomatis.
   - Belum ada statistik owner (DAU, user baru, jam ramai).
   - Belum ada broadcast ke semua user.
 ================================================================

@@ -99,16 +99,31 @@ DATA_DIR = os.getenv("RANDOMUNDERGROUND_DATA_DIR", ".")
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, "randomunderground.db")
 
+# Satu-satunya sumber daftar hashtag. Sebelumnya daftar ini ditulis ulang di
+# RULES_TEXT dan SEND_HELP_TEXT, jadi tiap perubahan harus disalin tiga kali
+# dan pasti cepat melenceng. Sekarang kedua teks itu dibangun dari sini.
 VALID_HASHTAGS = {
-    "#mutual": "cari mutual / teman baru",
+    "#drop": "tool, repo, file, atau link yang bisa langsung dipakai",
+    "#baca": "artikel, thread, atau video yang layak diluangkan waktu",
+    "#ask": "tanya langsung ke intinya, jangan cuma \"ada yang tau ga\"",
+    "#help": "butuh bantuan nyata, bukan cuma minta pendapat",
     "#curhat": "cerita atau keluh kesah",
+    "#confess": "pengakuan yang nggak bisa kamu bilang pakai nama",
+    "#salty": "lagi kesal dan pengen ngeluarin",
+    "#gabut": "lagi bengong, cari bahan obrolan",
     "#random": "bebas, apa aja",
-    "#gabut": "ajak ngobrol / cari teman",
-    "#confess": "sesuatu yang ingin disampaikan",
-    "#ask": "tanya atau minta pendapat",
-    "#salty": "lagi pengen ngeluarin kekesalan",
-    "#want": "sedang mencari sesuatu / seseorang",
 }
+
+
+def hashtag_list(with_description=True, per_row=3):
+    """Daftar hashtag untuk ditampilkan ke user."""
+    if with_description:
+        return "\n".join(f"{tag} — {desc}" for tag, desc in VALID_HASHTAGS.items())
+    tags = list(VALID_HASHTAGS)
+    baris = [
+        "  ".join(tags[i:i + per_row]) for i in range(0, len(tags), per_row)
+    ]
+    return "\n".join(baris)
 
 # Filter dasar. Ini sengaja tidak memblokir kata biasa yang bisa punya konteks
 # netral. Daftar ini bisa diperluas oleh owner.
@@ -2241,32 +2256,34 @@ WELCOME_TEXT = (
 )
 
 RULES_TEXT = (
-    "RANDOM UNDERGROUND // RULES\n\n"
-    "\u25aa Satu hashtag di awal pesan.\n"
-    "\u25aa Jangan spam. Jangan ulang-ulang.\n"
-    "\u25aa Data pribadi orang lain: jangan.\n"
-    "\u25aa Kata kasar dan serangan pribadi: jangan.\n"
-    "\u25aa Hormati penghuni lain.\n"
-    "\u25aa Komentar terbuka, tapi dimoderasi.\n\n"
-    "AVAILABLE TAGS\n"
-    "#mutual  #curhat  #random  #gabut\n"
-    "#confess  #ask  #salty  #want"
+    "RULES\n\n"
+    "Anonim ke pembaca, bukan ke admin.\n"
+    "Tiap kiriman tersimpan beserta pengirimnya. Yang hilang cuma "
+    "namamu di mata orang yang baca, bukan jejaknya.\n\n"
+    "KIRIMAN DIHAPUS KALAU\n"
+    "\u25aa Hashtagnya nggak ada, atau nggak nyambung sama isinya\n"
+    "\u25aa Jualan, promosi, judi, link afiliasi\n"
+    "\u25aa Ada data pribadi orang lain: nama, nomor, alamat, foto\n"
+    "\u25aa Nyerang fisik, ras, agama, atau orientasi orang\n\n"
+    "AKUN DIBATASI KALAU\n"
+    "\u25aa Ngirim hal yang sama berulang-ulang\n"
+    f"\u25aa Kena hapus {MAX_COMMENT_WARNINGS} kali\n"
+    "\u25aa Bikin akun baru buat lolos dari batasan\n\n"
+    "Tiap kiriman ada tombol LAPOR. Laporan masuk ke admin lengkap "
+    "dengan identitas pengirimnya, jadi jangan coba-coba.\n\n"
+    f"Kuota {MAX_SENDS} kiriman per 24 jam.\n\n"
+    "HASHTAG\n"
+    + hashtag_list()
 )
 
 SEND_HELP_TEXT = (
-    "ANONYMOUS POST\n\n"
-    "Send your message here.\n"
-    "Text or photo + caption are supported.\n\n"
-    "Jangan lupa pakai satu hashtag di awal:\n\n"
-    "#mutual — cari mutual / teman baru\n"
-    "#curhat — cerita atau keluh kesah\n"
-    "#random — bebas, apa aja\n"
-    "#gabut — ajak ngobrol / cari teman\n"
-    "#confess — sesuatu yang ingin disampaikan\n"
-    "#ask — tanya atau minta pendapat\n"
-    "#salty — lagi pengen ngeluarin kekesalan\n"
-    "#want — sedang mencari sesuatu / seseorang\n\n"
-    "Example: #random hari ini ngantuk banget."
+    "KIRIM ANONIM\n\n"
+    "Tulis pesanmu di sini. Teks, atau foto plus caption.\n"
+    "Wajib satu hashtag di paling depan.\n\n"
+    + hashtag_list()
+    + "\n\nContoh:\n"
+    "#drop ada extension buat blokir tracker, ringan: ...\n"
+    "#ask cara mindahin domain tanpa downtime gimana?"
 )
 
 
@@ -3442,7 +3459,7 @@ async def process_new_menfess(update, context):
     if hashtag not in VALID_HASHTAGS:
         await message.reply_text(
             "✕ Hashtag tidak tersedia.\n\n"
-            "Pakai salah satu:\n" + "  ".join(VALID_HASHTAGS.keys())
+            "Pakai salah satu:\n\n" + hashtag_list()
         )
         return
 
