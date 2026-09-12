@@ -253,14 +253,27 @@ MASALAH YANG DISELESAIKAN
     pun karena ada jumlah komentar dan komposernya benar. Postingan
     dibiarkan bersih, dan pelaporan dipindah ke dua jalur di bawah.
 
-  DUA JALUR PELAPORAN
-    1. /lapor di grup diskusi, sambil reply pesan yang bermasalah.
-       Terbuka untuk SEMUA member, bukan cuma owner. Bisa melaporkan
-       komentar, atau melaporkan postingannya dengan reply ke pesan
-       auto-forward di grup.
-    2. Forward postingannya ke DM bot. Bot membalas dengan tombol
-       LAPOR. Jalur ini juga yang dipakai owner untuk /whois, jadi
-       kebiasaannya sama.
+  EMPAT JALUR PELAPORAN
+    1. SALIN LINK POSTINGAN, kirim ke bot. Ini jalur utama: Copy Link
+       adalah aksi standar Telegram di setiap postingan, jadi paling
+       mudah ditemukan. Bot menampilkan isi postingannya, waktu kirim,
+       dan jumlah laporan yang sudah masuk, lalu tombol LAPOR. Isinya
+       ditampilkan supaya pelapor bisa memastikan tidak salah
+       postingan.
+    2. Tombol ⚠️ LAPOR POSTINGAN di menu utama bot, yang menjelaskan
+       semua cara di atas. Ini yang membuat fiturnya bisa ditemukan
+       tanpa harus tahu perintah apa pun.
+    3. Forward postingannya ke DM bot. Sama hasilnya dengan nomor 1.
+    4. /lapor di grup diskusi sambil reply pesan yang bermasalah.
+       Terbuka untuk SEMUA member. Bisa melaporkan komentar, atau
+       melaporkan postingannya dengan reply ke pesan auto-forward.
+
+    Notifikasi komentar yang dikirim ke pemilik postingan juga punya
+    tombol LAPOR, jadi komentar bermasalah bisa dilaporkan langsung
+    dari notifikasinya.
+
+    /lapor sudah didaftarkan ke Telegram lewat setMyCommands, jadi
+    muncul di menu "/" grup diskusi tanpa perlu dihafal.
 
     Keduanya menolak laporan atas pesan sendiri, menolak laporan ganda
     dari orang yang sama, dan mengirim entri ke log channel lengkap

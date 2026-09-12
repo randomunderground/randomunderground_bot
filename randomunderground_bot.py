@@ -707,10 +707,10 @@ STRINGS = {
             "#share BUKAN hasil verifikasi admin. Jangan share sembarangan, "
             "dan jangan telan mentah-mentah yang di-share orang: periksa "
             "sendiri sebelum dibuka, diunduh, atau dipakai.\n\n"
-            "Ada yang melanggar? Reply pesannya di grup diskusi lalu kirim "
-            "/lapor, atau forward postingannya ke bot ini. Laporan masuk ke "
-            "admin lengkap dengan identitas pengirimnya, jadi jangan "
-            "coba-coba.\n\n"
+            "Ada yang melanggar? Salin link postingannya lalu kirim ke bot, "
+            "atau reply pesannya di grup diskusi dan kirim /lapor. Ada juga "
+            "tombol LAPOR POSTINGAN di menu bot. Laporan masuk ke admin "
+            "lengkap dengan identitas pengirimnya, jadi jangan coba-coba.\n\n"
             "Kuota {max} kiriman per 24 jam.\n\n"
             "HASHTAG\n{tags}"
         ),
@@ -734,10 +734,11 @@ STRINGS = {
             "#share is NOT verified by admins. Don't share carelessly, and "
             "don't take what others share at face value: check it yourself "
             "before opening, downloading, or using it.\n\n"
-            "See something breaking the rules? Reply to it in the discussion "
-            "group and send /lapor, or forward the post to this bot. Reports "
-            "reach the admins together with the sender's identity, so don't "
-            "try it.\n\n"
+            "See something breaking the rules? Copy the post link and send "
+            "it to the bot, or reply to it in the discussion group and send "
+            "/lapor. There's also a REPORT A POST button in the bot menu. "
+            "Reports reach the admins together with the sender's identity, "
+            "so don't try it.\n\n"
             "Quota: {max} posts per 24 hours.\n\n"
             "HASHTAGS\n{tags}"
         ),
@@ -1104,6 +1105,67 @@ STRINGS = {
         "en": "Reason recorded: {reason}. Thanks!",
     },
     "btn_report": {"id": "⚠️ LAPOR", "en": "⚠️ REPORT"},
+    "btn_report_menu": {"id": "⚠️ LAPOR POSTINGAN", "en": "⚠️ REPORT A POST"},
+    "report_how": {
+        "id": (
+            "⚠️ LAPOR POSTINGAN\n\n"
+            "Postingan di channel sengaja tidak diberi tombol, supaya tombol "
+            "komentar Telegram tetap ada. Jadi melapornya dari sini.\n\n"
+            "CARA 1 — salin link postingan\n"
+            "Tekan lama postingannya di channel, pilih Copy Link, lalu kirim "
+            "link itu ke chat ini.\n\n"
+            "CARA 2 — forward\n"
+            "Forward postingannya ke chat ini.\n\n"
+            "CARA 3 — di grup diskusi\n"
+            "Reply pesan yang bermasalah, lalu kirim /lapor\n\n"
+            "Bot akan menampilkan isi postingannya dan tombol LAPOR, jadi "
+            "kamu bisa memastikan dulu tidak salah postingan.\n\n"
+            "Identitas kamu sebagai pelapor tidak ditampilkan ke publik."
+        ),
+        "en": (
+            "⚠️ REPORT A POST\n\n"
+            "Channel posts deliberately have no buttons so that Telegram's "
+            "own comment button stays available. So reporting happens here.\n\n"
+            "OPTION 1 — copy the post link\n"
+            "Long-press the post in the channel, pick Copy Link, then send "
+            "that link to this chat.\n\n"
+            "OPTION 2 — forward\n"
+            "Forward the post to this chat.\n\n"
+            "OPTION 3 — in the discussion group\n"
+            "Reply to the offending message, then send /lapor\n\n"
+            "The bot will show you the post content and a REPORT button, so "
+            "you can make sure you picked the right one first.\n\n"
+            "You won't be shown publicly as the reporter."
+        ),
+    },
+    "report_preview": {
+        "id": (
+            "Postingan yang mau dilaporkan:\n\n"
+            "———\n{preview}\n———\n\n"
+            "Dikirim: {when}\n"
+            "Laporan sekarang: {n}\n\n"
+            "Kalau ini postingan yang kamu maksud, tekan LAPOR."
+        ),
+        "en": (
+            "Post you're about to report:\n\n"
+            "———\n{preview}\n———\n\n"
+            "Posted: {when}\n"
+            "Reports so far: {n}\n\n"
+            "If this is the right post, press REPORT."
+        ),
+    },
+    "report_link_bad": {
+        "id": (
+            "✕ Itu bukan link postingan channel RANDOM UNDERGROUND.\n\n"
+            "Link yang benar bentuknya seperti:\n"
+            "https://t.me/randomunderground/1234"
+        ),
+        "en": (
+            "✕ That isn't a RANDOM UNDERGROUND channel post link.\n\n"
+            "A valid link looks like:\n"
+            "https://t.me/randomunderground/1234"
+        ),
+    },
     "report_offer": {
         "id": (
             "Postingan ini dari channel RANDOM UNDERGROUND.\n\n"
@@ -1130,18 +1192,18 @@ STRINGS = {
     "lapor_help": {
         "id": (
             "CARA MELAPOR\n\n"
-            "1. Di grup diskusi: reply pesan yang bermasalah, lalu kirim "
-            "/lapor\n"
-            "2. Postingan channel: forward postingannya ke bot ini, bot akan "
-            "memberi tombol LAPOR\n\n"
+            "1. Postingan channel: salin link postingannya (Copy Link) lalu "
+            "kirim ke bot, atau forward postingannya ke bot\n"
+            "2. Komentar: reply komentarnya di grup diskusi, lalu kirim "
+            "/lapor\n\n"
             "Identitas kamu sebagai pelapor tidak ditampilkan ke publik."
         ),
         "en": (
             "HOW TO REPORT\n\n"
-            "1. In the discussion group: reply to the offending message, then "
-            "send /lapor\n"
-            "2. A channel post: forward it to this bot and it will give you a "
-            "REPORT button\n\n"
+            "1. A channel post: copy its link (Copy Link) and send it to the "
+            "bot, or forward the post to the bot\n"
+            "2. A comment: reply to it in the discussion group, then send "
+            "/lapor\n\n"
             "You won't be shown publicly as the reporter."
         ),
     },
@@ -3404,6 +3466,7 @@ def main_menu(user_id=None, lang=None):
         [InlineKeyboardButton(t("btn_ranking", lang), callback_data="leaderboard")],
         [InlineKeyboardButton(t("btn_community", lang), callback_data="community")],
         [InlineKeyboardButton(t("btn_rules", lang), callback_data="rules")],
+        [InlineKeyboardButton(t("btn_report_menu", lang), callback_data="report:how")],
         [InlineKeyboardButton(t("btn_language", lang), callback_data="lang:menu")],
     ]
     if user_id is not None and is_owner(user_id):
@@ -3698,6 +3761,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             SimpleNamespace(message=palsu, effective_user=user), context
         )
         context.user_data.pop("share_confirmed", None)
+        return
+
+    if data == "report:how":
+        await query.message.reply_text(
+            t("report_how", lang), reply_markup=rules_menu(lang)
+        )
         return
 
     if data == "lang:menu":
@@ -4512,21 +4581,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_new_menfess(update, context)
         return
 
-    # Forward postingan channel ke DM = jalur melaporkan postingan, karena
-    # postingannya sendiri sengaja tidak diberi tombol apa pun.
+    # Dua jalur melaporkan postingan dari DM, karena postingan di channel
+    # sengaja tidak diberi tombol apa pun supaya tombol Comment bawaan
+    # Telegram tetap ada: forward postingannya, atau kirim link-nya.
     fwd_post_id = get_channel_post_id_from_discussion_root(update.message)
-    if fwd_post_id is not None:
-        menfess = get_menfess_by_channel_message(fwd_post_id)
-        if menfess:
-            if int(menfess["sender_id"]) == user.id:
-                await update.message.reply_text(t("lapor_own", lang))
-                return
-            await update.message.reply_text(
-                t("report_offer", lang),
-                reply_markup=report_offer_menu(menfess["id"], lang),
-            )
+    link_post_id = _channel_message_id_from_link(update.message.text or "")
+
+    post_id = fwd_post_id if fwd_post_id is not None else link_post_id
+    if post_id is not None:
+        menfess = get_menfess_by_channel_message(post_id)
+        if not menfess:
+            await update.message.reply_text(t("report_fwd_unknown", lang))
             return
-        await update.message.reply_text(t("report_fwd_unknown", lang))
+        if int(menfess["sender_id"]) == user.id:
+            await update.message.reply_text(t("lapor_own", lang))
+            return
+        await offer_report_for_post(update.message, menfess, lang)
+        return
+
+    # Teks yang berisi link t.me tapi bukan postingan channel kita.
+    if "t.me/" in (update.message.text or ""):
+        await update.message.reply_text(t("report_link_bad", lang))
         return
 
     await update.message.reply_text(
@@ -4653,6 +4728,41 @@ async def process_private_comment_reply(update, context, db_id):
             add_event_points(user.id, comment=1, menfess_id=db_id)
 
         await update.message.reply_text(t("reply_sent", lang))
+
+        # Balasan anonim dikirim oleh bot sendiri, dan
+        # discussion_comment_handler melewati pesan dari bot. Tanpa blok ini
+        # rantai notifikasi putus: orang yang dibalas tidak pernah tahu ada
+        # balasan, jadi percakapannya mati di situ.
+        target_user_id = int(comment["author_user_id"])
+        if target_user_id == user.id:
+            target_user_id = int(menfess["sender_id"])
+        if target_user_id != user.id:
+            try:
+                balasan_db = find_discussion_message(
+                    discussion_chat_id, sent.message_id
+                )
+                if balasan_db:
+                    preview = text.strip()
+                    if not preview:
+                        preview = "Foto" if update.message.photo else "Pesan baru"
+                    if len(preview) > 250:
+                        preview = preview[:250] + "…"
+                    target_lang = get_user_lang(target_user_id)
+                    await context.bot.send_message(
+                        target_user_id,
+                        t("new_reply", target_lang, preview=preview),
+                        reply_markup=reply_comment_button(
+                            balasan_db["id"], target_lang
+                        ),
+                    )
+                    logging.info(
+                        "NOTIF balasan anonim terkirim ke %s (menfess %s)",
+                        target_user_id, menfess["id"],
+                    )
+            except Exception:
+                logging.exception(
+                    "NOTIF balasan anonim GAGAL ke user %s", target_user_id
+                )
     except Exception:
         logging.exception("Gagal mengirim balasan anonim")
         await update.message.reply_text(t("reply_failed", lang))
@@ -4948,10 +5058,14 @@ async def discussion_comment_handler(update, context):
             t("new_reply", target_lang, preview=preview),
             reply_markup=reply_comment_button(comment_db["id"], target_lang),
         )
-    except Exception:
         logging.info(
-            "Tidak bisa mengirim notif komentar ke user %s",
-            target_user_id,
+            "NOTIF komentar terkirim ke %s (menfess %s, dari %s)",
+            target_user_id, menfess["id"], message.from_user.id,
+        )
+    except Exception:
+        logging.exception(
+            "NOTIF komentar GAGAL ke user %s (menfess %s)",
+            target_user_id, menfess["id"],
         )
 
 
@@ -4979,6 +5093,13 @@ def reply_comment_button(comment_db_id, lang=None):
             ),
         ],
         [InlineKeyboardButton(t("btn_view_post", lang), url=post_url)],
+        # Postingan channel tidak bisa diberi tombol lapor tanpa mematikan
+        # tombol Comment bawaan, jadi notifikasi inilah tempat paling dekat
+        # untuk melaporkan komentar yang bermasalah.
+        [InlineKeyboardButton(
+            t("btn_report", lang),
+            callback_data=f"rep:laporc:{comment_db_id}",
+        )],
     ])
 
 
@@ -5119,6 +5240,21 @@ def mark_reports_handled(target_type, target_id, actor_id):
 #   2. forward postingannya ke DM bot, bot membalas dengan tombol LAPOR
 
 
+async def offer_report_for_post(message, menfess, lang):
+    """Tampilkan isi postingan + tombol LAPOR, supaya pelapor bisa
+    memastikan dulu tidak salah postingan."""
+    total, _ = report_summary("menfess", menfess["id"])
+    await message.reply_text(
+        t(
+            "report_preview", lang,
+            preview=(menfess["content"] or "(tanpa teks)")[:600],
+            when=fmt_ts(menfess["created_at"]),
+            n=total,
+        ),
+        reply_markup=report_offer_menu(menfess["id"], lang),
+    )
+
+
 def report_offer_menu(menfess_id, lang=None):
     """Tombol lapor yang muncul di DM setelah user mem-forward postingan."""
     return InlineKeyboardMarkup([
@@ -5250,6 +5386,36 @@ async def handle_report_callback(update, context, data):
             )
         except Exception:
             pass
+        return
+
+    if action == "laporc":
+        try:
+            comment_db_id = int(parts[2])
+        except (IndexError, ValueError):
+            return
+        comment = get_discussion_message_by_db_id(comment_db_id)
+        if not comment:
+            await toast(t("lapor_untracked", lang))
+            return
+        if int(comment["author_user_id"]) == user.id:
+            await toast(t("lapor_own", lang))
+            return
+
+        save_user(user)
+        baru, total = add_report("comment", comment_db_id, user.id)
+        if not baru:
+            await toast(t("report_dupe", lang))
+            return
+        await toast(t("report_ok", lang))
+        if total in REPORT_NOTIFY_AT:
+            await log_report(
+                context.bot, "comment", comment_db_id, user.id, total
+            )
+        else:
+            logging.info(
+                "LAPORAN comment=%s total=%s (belum ambang notifikasi)",
+                comment_db_id, total,
+            )
         return
 
     if action == "why":
@@ -7661,8 +7827,72 @@ async def creative_files_janitor():
         await asyncio.sleep(1800)
 
 
+async def publish_bot_commands(application):
+    """Daftarkan perintah ke Telegram supaya muncul di menu "/".
+
+    Ini satu-satunya cara membuat /lapor mudah ditemukan anggota tanpa
+    memasang tombol di postingan channel, yang akan mematikan tombol
+    Comment bawaan Telegram.
+    """
+    from telegram import BotCommand, BotCommandScopeAllGroupChats, \
+        BotCommandScopeAllPrivateChats, BotCommandScopeChat
+
+    grup = [
+        BotCommand("lapor", "laporkan pesan ini ke admin (reply dulu)"),
+    ]
+    privat = [
+        BotCommand("start", "buka menu utama"),
+        BotCommand("profile", "lihat profil dan poin kamu"),
+        BotCommand("giveaway", "lihat giveaway yang sedang berjalan"),
+        BotCommand("lapor", "cara melaporkan pelanggaran"),
+    ]
+    owner = privat + [
+        BotCommand("whois", "lacak identitas pengirim"),
+        BotCommand("ban", "ban permanen"),
+        BotCommand("mute", "bisukan sementara"),
+        BotCommand("shadowban", "pesan tidak tayang, user tidak diberi tahu"),
+        BotCommand("unban", "cabut pembatasan"),
+        BotCommand("warn", "tambah warning"),
+        BotCommand("banlist", "daftar user yang dibatasi"),
+        BotCommand("reports", "laporan yang belum ditangani"),
+        BotCommand("modlog", "riwayat tindakan moderasi"),
+        BotCommand("modhelp", "semua perintah moderasi"),
+        BotCommand("backup", "backup database sekarang"),
+        BotCommand("giveaway_start", "buat giveaway baru"),
+        BotCommand("giveaway_status", "info giveaway terkini"),
+        BotCommand("giveaway_draw", "undi giveaway sekarang"),
+        BotCommand("setlog", "pasang log channel"),
+        BotCommand("logtest", "cek log channel"),
+    ]
+
+    try:
+        await application.bot.set_my_commands(
+            grup, scope=BotCommandScopeAllGroupChats()
+        )
+        await application.bot.set_my_commands(
+            privat, scope=BotCommandScopeAllPrivateChats()
+        )
+        for owner_id in OWNER_USER_IDS:
+            try:
+                await application.bot.set_my_commands(
+                    owner, scope=BotCommandScopeChat(owner_id)
+                )
+            except Exception:
+                logging.info(
+                    "Tidak bisa memasang daftar perintah owner untuk %s "
+                    "(owner mungkin belum pernah /start)", owner_id
+                )
+        logging.info(
+            "DAFTAR PERINTAH terpasang: %s grup, %s privat, %s owner",
+            len(grup), len(privat), len(owner),
+        )
+    except Exception:
+        logging.exception("Gagal memasang daftar perintah")
+
+
 async def post_init(application):
     await load_chat_ids(application)
+    await publish_bot_commands(application)
     application.create_task(event_watcher(application))
     application.create_task(community_watcher(application))
     application.create_task(creative_files_janitor())
